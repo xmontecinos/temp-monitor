@@ -43,9 +43,13 @@ def procesar_datos(folder):
 if os.path.exists(FOLDER_PATH):
     df = procesar_datos(FOLDER_PATH)
     
-    if not df.empty:
+ if not df.empty:
+        # 1. Crear la estampa de tiempo
         df['Timestamp'] = pd.to_datetime(df['Fecha'] + ' ' + df['Hora'])
         
+        # 2. ESTA ES LA LÍNEA MÁGICA: Ordenar cronológicamente
+        df = df.sort_values(by='Timestamp') 
+
         # --- FILTROS ---
         st.sidebar.header("Filtros de Red")
         sitio = st.sidebar.selectbox("Selecciona Sitio", sorted(df['Sitio'].unique()))
