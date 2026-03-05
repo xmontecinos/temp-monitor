@@ -10,7 +10,7 @@ st.title("🌡️ Monitor de Temperaturas (Lectura Automática)")
 
 # --- CONFIGURACIÓN DE CARPETA ---
 # Asegúrate de que esta carpeta exista en tu repositorio de GitHub
-FOLDER_PATH = 'temperaturas' 
+FOLDER_PATH = 'Temperatura' 
 
 def procesar_datos(folder):
     rows_list = []
