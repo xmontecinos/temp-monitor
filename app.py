@@ -9,7 +9,8 @@ st.title("🌡️ Monitor de Temperaturas de Red")
 
 FOLDER_PATH = 'Temperatura' 
 
-@st.cache_data
+# --- MEMORIA CACHE PARA VELOCIDAD ---
+@st.cache_data 
 def procesar_datos(folder):
     rows_list = []
     if not os.path.exists(folder):
@@ -19,7 +20,6 @@ def procesar_datos(folder):
         path = os.path.join(folder, file_name)
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
-            # Regex para extraer NE Name, Fecha, Hora y la tabla de temperaturas
             blocks = re.findall(r'NE Name:\s+([^\n\r]+).*?\+\+\+\s+\S+\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}).*?Display Board Temperature(.*?)\n---    END', content, re.DOTALL)
             for ne_name, fecha, hora, table_text in blocks:
                 rows = re.findall(r'(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+([A-Z0-9]+)', table_text)
@@ -33,68 +33,61 @@ def procesar_datos(folder):
 df = procesar_datos(FOLDER_PATH)
 
 if df is not None and not df.empty:
-    # Preparar datos generales
     df['Timestamp'] = pd.to_datetime(df['Fecha'] + ' ' + df['Hora'])
     df = df.sort_values(by='Timestamp')
 
-    # --- FILTROS GLOBALES (Barra Lateral) ---
+    # --- FILTROS GLOBALES ---
     st.sidebar.header("Filtros Globales")
-    
-    # Filtro de Sitio (para la Pestaña 1)
     lista_sitios = sorted(df['Sitio'].unique())
-    sitio_seleccionado = st.sidebar.selectbox("Selecciona Sitio", lista_sitios)
-    
-    # Filtro de Slot (para AMBAS pestañas)
     lista_slots = sorted(df['Slot'].unique(), key=int)
     slots_seleccionados = st.sidebar.multiselect("Seleccionar Slots", lista_slots, default=lista_slots)
 
-    # CREACIÓN DE PESTAÑAS
-    tab1, tab2 = st.tabs(["📈 Gráficos Históricos", "🚦 Semáforo por Slot"])
+    tab1, tab2 = st.tabs(["📈 Gráficos Históricos", "🚦 Semáforo de Estado"])
 
     with tab1:
-        st.subheader(f"Análisis de Tendencias: {sitio_seleccionado}")
-        # Filtrar por sitio y por los slots seleccionados
-        df_sitio = df[(df['Sitio'] == sitio_seleccionado) & (df['Slot'].isin(slots_seleccionados))]
+        sitio_hist = st.selectbox("Selecciona Sitio para Histórico", lista_sitios, key="hist")
+        df_sitio = df[(df['Sitio'] == sitio_hist) & (df['Slot'].isin(slots_seleccionados))]
         
-        if not df_sitio.empty:
-            fig = px.line(df_sitio, x='Timestamp', y='Board_Temp', color='Slot',
-                          title=f"Histórico de Temperaturas en {sitio_seleccionado}",
-                          labels={'Board_Temp': 'Temp °C', 'Timestamp': 'Fecha y Hora'},
-                          markers=True)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("No hay datos para los Slots seleccionados en este sitio.")
+        fig = px.line(df_sitio, x='Timestamp', y='Board_Temp', color='Slot',
+                      title=f"Tendencia Térmica en {sitio_hist}",
+                      labels={'Board_Temp': 'Temp °C', 'Timestamp': 'Fecha y Hora'},
+                      markers=True)
+        st.plotly_chart(fig, use_container_width=True)
 
     with tab2:
-        st.subheader("Estado Actual por Slot Seleccionado")
+        st.subheader("Estado Actual (Última Lectura)")
         
-        # Obtener el último registro de cada combinación Sitio/Slot
+        # Modo de visualización
+        modo = st.radio("Visualización:", ["Ver Todos los Sitios", "Ver Solo un Sitio"], horizontal=True)
+        
         df_ultimo = df.sort_values('Timestamp').groupby(['Sitio', 'Slot']).last().reset_index()
-        
-        # Aplicar el filtro de Slots seleccionados en el semáforo
-        df_semaforo = df_ultimo[df_ultimo['Slot'].isin(slots_seleccionados)]
-        
-        # Función para asignar colores
+        df_ultimo = df_ultimo[df_ultimo['Slot'].isin(slots_seleccionados)]
+
         def get_status(val):
             if val < 45: return '🟢 Normal'
-            elif val < 65: return '🟡 Precaución'
+            elif val < 55: return '🟡 Precaución'
             else: return '🔴 Crítico'
 
-        df_semaforo['Estado'] = df_semaforo['Board_Temp'].apply(get_status)
+        if modo == "Ver Solo un Sitio":
+            sitio_semaforo = st.selectbox("Elegir Sitio", lista_sitios, key="sem_unico")
+            df_filtro = df_ultimo[df_ultimo['Sitio'] == sitio_semaforo]
+            
+            # Mostrar como tarjetas (Métricas)
+            cols = st.columns(len(df_filtro) if len(df_filtro) > 0 else 1)
+            for i, (index, row) in enumerate(df_filtro.iterrows()):
+                with cols[i % len(cols)]:
+                    status = get_status(row['Board_Temp'])
+                    st.metric(label=f"Slot {row['Slot']}", value=f"{row['Board_Temp']} °C", delta=status, delta_color="off")
+            
+            st.write(f"**Última actualización de este sitio:** {df_filtro['Timestamp'].max()}")
         
-        # Métricas resumidas del filtro actual
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Alertas Críticas", len(df_semaforo[df_semaforo['Board_Temp'] >= 65]))
-        m2.metric("Temp Máxima en Selección", f"{df_semaforo['Board_Temp'].max() if not df_semaforo.empty else 0} °C")
-        m3.metric("Slots Monitoreados", len(df_semaforo))
-
-        # Tabla dinámica
-        st.write("Vista resumida (ordenada por temperatura más alta):")
-        st.dataframe(
-            df_semaforo[['Sitio', 'Slot', 'Board_Temp', 'Estado', 'Timestamp']].sort_values(by='Board_Temp', ascending=False),
-            use_container_width=True,
-            hide_index=True
-        )
+        else:
+            # Vista de tabla general
+            df_ultimo['Estado'] = df_ultimo['Board_Temp'].apply(get_status)
+            st.dataframe(
+                df_ultimo[['Sitio', 'Slot', 'Board_Temp', 'Estado', 'Timestamp']].sort_values(by='Board_Temp', ascending=False),
+                use_container_width=True, hide_index=True
+            )
 
 else:
-    st.error("No se encontraron datos en la carpeta 'Temperatura'.")
+    st.error("No se encontraron datos.")
