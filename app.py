@@ -11,7 +11,7 @@ st.title("🌡️ Monitor de Temperaturas (Lectura Automática)")
 # --- CONFIGURACIÓN DE CARPETA ---
 # Asegúrate de que esta carpeta exista en tu repositorio de GitHub
 FOLDER_PATH = 'Temperatura'
-
+@st.cache_data # <-- Agrega esto justo arriba de la función
 def procesar_datos(folder):
     rows_list = []
     if not os.path.exists(folder):
