@@ -77,14 +77,14 @@ if df is not None and not df.empty:
         # Función para asignar colores
         def get_status(val):
             if val < 45: return '🟢 Normal'
-            elif val < 55: return '🟡 Precaución'
+            elif val < 65: return '🟡 Precaución'
             else: return '🔴 Crítico'
 
         df_semaforo['Estado'] = df_semaforo['Board_Temp'].apply(get_status)
         
         # Métricas resumidas del filtro actual
         m1, m2, m3 = st.columns(3)
-        m1.metric("Alertas Críticas", len(df_semaforo[df_semaforo['Board_Temp'] >= 55]))
+        m1.metric("Alertas Críticas", len(df_semaforo[df_semaforo['Board_Temp'] >= 65]))
         m2.metric("Temp Máxima en Selección", f"{df_semaforo['Board_Temp'].max() if not df_semaforo.empty else 0} °C")
         m3.metric("Slots Monitoreados", len(df_semaforo))
 
