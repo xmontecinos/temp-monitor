@@ -1,0 +1,6 @@
+📦 tu-repositorio
+ ┣ 📂 temperaturas        <-- Aquí van todos tus archivos .txt
+ ┃ ┣ 📜 archivo1.txt
+ ┃ ┗ 📜 archivo2.txt
+ ┣ 📜 app.py              <-- El código de arriba
+ ┗ 📜 requirements.txt    <-- (streamlit, pandas, plotly)
