@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 st.set_page_config(page_title="Monitor Red Profesional", layout="wide")
 
 # --- CONFIGURACIÓN ---
-UMBRAL_CRITICO = 65 
+UMBRAL_CRITICO = 79 
 FOLDER_PATH = 'Temperatura'
 
 st.sidebar.header("🛡️ Control de Red")
