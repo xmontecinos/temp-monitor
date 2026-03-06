@@ -5,7 +5,7 @@ import os
 import plotly.express as px
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Monitor Red Profesional", layout="wide")
+st.set_page_config(page_title="Monitor Red Ultra Fast", layout="wide")
 
 # --- CONFIGURACIÓN ---
 UMBRAL_CRITICO = 79 
@@ -16,108 +16,99 @@ if st.sidebar.button("♻️ Forzar Recarga Total"):
     st.cache_data.clear()
     st.rerun()
 
-def extraer_datos(content, ne_name, fecha, hora):
-    """Función auxiliar para procesar el texto de los archivos."""
-    rows_list = []
-    # Captura: Cab, Sub, Slot, Temp
-    rows = re.findall(r'(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(?:\d+|NULL)', content)
-    for r in rows:
-        rows_list.append({
-            "Timestamp": pd.to_datetime(f"{fecha} {hora}"),
-            "Sitio": ne_name.strip(),
-            "Subrack": r[1],
-            "Slot": int(r[2]),
-            "Temp": int(r[3]),
-            "ID_Full": f"{ne_name.strip()} (S:{r[1]}-L:{r[2]})"
-        })
-    return rows_list
-
-@st.cache_data(ttl=60)
-def cargar_datos_monitor(folder):
-    if not os.path.exists(folder): return None, None
-    archivos = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".txt")]
-    if not archivos: return None, None
-    archivos.sort(key=os.path.getmtime, reverse=True)
-
-    # 1. PROCESAR ÚLTIMO REPORTE (Alertas y Buscador)
-    ultimo_archivo = archivos[0]
-    data_ultima = []
+def extraer_rapido(path):
+    """Extrae datos de un solo archivo de forma eficiente."""
     try:
-        with open(ultimo_archivo, 'r', encoding='latin-1', errors='ignore') as f:
+        with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
             blocks = re.findall(r'NE Name:\s+([^\n\r]+).*?(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}).*?Display Board Temperature(.*?)\n---    END', content, re.DOTALL)
+            data = []
             for ne_name, fecha, hora, table_text in blocks:
-                data_ultima.extend(extraer_datos(table_text, ne_name, fecha, hora))
-    except: pass
-    df_ultima = pd.DataFrame(data_ultima)
+                rows = re.findall(r'(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(?:\d+|NULL)', table_text)
+                for r in rows:
+                    data.append({
+                        "Timestamp": pd.to_datetime(f"{fecha} {hora}"),
+                        "Sitio": ne_name.strip(),
+                        "Subrack": r[1],
+                        "Slot": int(r[2]),
+                        "Temp": int(r[3]),
+                        "ID_Full": f"{ne_name.strip()} (S:{r[1]}-L:{r[2]})"
+                    })
+            return data
+    except:
+        return []
 
-    # 2. PROCESAR HISTÓRICO (Últimos 7 días)
+@st.cache_data(ttl=120) # Cache de 2 minutos
+def cargar_todo_optimizado(folder):
+    if not os.path.exists(folder): return None, None
+    
+    # Obtener lista de archivos con su fecha de modificación sin abrirlos
+    archivos = []
+    for f in os.listdir(folder):
+        if f.endswith(".txt"):
+            full_path = os.path.join(folder, f)
+            archivos.append((full_path, os.path.getmtime(full_path)))
+    
+    if not archivos: return None, None
+    
+    # Ordenar por tiempo (el más nuevo primero)
+    archivos.sort(key=lambda x: x[1], reverse=True)
+
+    # 1. ULTIMO REPORTE (Carga instantánea: 1 solo archivo)
+    df_ultima = pd.DataFrame(extraer_rapido(archivos[0][0]))
+
+    # 2. HISTORICO 7 DIAS (Procesamiento limitado para evitar bloqueos)
     data_hist = []
     limite_7d = datetime.now() - timedelta(days=7)
-    # Leemos hasta 100 archivos para asegurar cubrir la semana
-    for path in archivos[:100]: 
-        if datetime.fromtimestamp(os.path.getmtime(path)) < limite_7d: break
-        try:
-            with open(path, 'r', encoding='latin-1', errors='ignore') as f:
-                content = f.read()
-                blocks = re.findall(r'NE Name:\s+([^\n\r]+).*?(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}).*?Display Board Temperature(.*?)\n---    END', content, re.DOTALL)
-                for ne_name, fecha, hora, table_text in blocks:
-                    data_hist.extend(extraer_datos(table_text, ne_name, fecha, hora))
-        except: continue
+    
+    # Leemos solo los últimos 25 archivos para el histórico
+    # Esto es suficiente para tendencias y no mata al servidor
+    for path, mtime in archivos[:25]:
+        if datetime.fromtimestamp(mtime) < limite_7d: break
+        data_hist.extend(extraer_rapido(path))
     
     df_hist = pd.DataFrame(data_hist)
     if not df_hist.empty:
-        # Agrupar por hora para limpiar el gráfico
-        df_hist['Fecha_Hora'] = df_hist['Timestamp'].dt.floor('h')
-        df_hist = df_hist.groupby(['Fecha_Hora', 'Sitio', 'ID_Full', 'Slot'])['Temp'].max().reset_index()
+        df_hist['Hora'] = df_hist['Timestamp'].dt.floor('h')
+        df_hist = df_hist.groupby(['Hora', 'Sitio', 'ID_Full', 'Slot'])['Temp'].max().reset_index()
 
     return df_ultima, df_hist
 
-# --- EJECUCIÓN ---
-with st.spinner('Actualizando Monitor...'):
-    df_ultima, df_hist = cargar_datos_monitor(FOLDER_PATH)
+# --- INTERFAZ ---
+df_u, df_h = cargar_todo_optimizado(FOLDER_PATH)
 
-if df_ultima is not None and not df_ultima.empty:
-    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS CRÍTICAS", "📍 BUSCADOR POR SITIO", "📈 HISTÓRICO (7 DÍAS)"])
+if df_u is not None and not df_u.empty:
+    t1, t2, t3 = st.tabs(["🚨 ALERTA ÚLTIMA", "📍 BUSCADOR", "📈 HISTÓRICO 7D"])
 
-    with tab1:
-        st.subheader(f"Alertas del Último Reporte (>= {UMBRAL_CRITICO}°C)")
-        # Selección de Slots
-        slots_disp = sorted(df_ultima['Slot'].unique())
-        slots_sel = st.multiselect("Filtrar por Slot:", slots_disp, default=slots_disp)
+    with t1:
+        st.subheader(f"Estado Crítico (Último reporte)")
+        # Selección de Slots para filtrar la alerta
+        slots_en_alerta = sorted(df_u['Slot'].unique())
+        sel_slots = st.multiselect("Ver Slots específicos:", slots_en_alerta, default=slots_en_alerta)
         
-        criticos = df_ultima[(df_ultima['Temp'] >= UMBRAL_CRITICO) & (df_ultima['Slot'].isin(slots_sel))]
+        criticos = df_u[(df_u['Temp'] >= UMBRAL_CRITICO) & (df_u['Slot'].isin(sel_slots))]
         
         if not criticos.empty:
             cols = st.columns(4)
-            for i, (_, row) in enumerate(criticos.sort_values('Temp', ascending=False).iterrows()):
+            for i, (_, r) in enumerate(criticos.sort_values('Temp', ascending=False).iterrows()):
                 with cols[i % 4]:
-                    st.markdown(f"""
-                        <div style="background-color:#FFC7CE; padding:15px; border-radius:10px; text-align:center; border:2px solid #9C0006; margin-bottom:10px;">
-                            <p style="margin:0; font-weight:bold; color:#9C0006;">{row['Sitio']}</p>
-                            <h2 style="margin:5px 0; color:#9C0006;">{row['Temp']}°C</h2>
-                            <p style="margin:0; font-size:12px; color:#9C0006;">SUB {row['Subrack']} | SLOT {row['Slot']}</p>
-                        </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"""<div style="background-color:#FFC7CE; padding:15px; border-radius:10px; text-align:center; border:2px solid #9C0006; margin-bottom:10px;">
+                        <h4 style="margin:0; color:#9C0006;">{r['Sitio']}</h4>
+                        <h1 style="margin:5px 0; color:#9C0006;">{r['Temp']}°C</h1>
+                        <small style="color:#9C0006;">S:{r['Subrack']} | L:{r['Slot']}</small>
+                        </div>""", unsafe_allow_html=True)
         else:
-            st.success("✅ Sin alertas críticas en los slots seleccionados.")
+            st.success("✅ Todo normal en los slots seleccionados.")
 
-    with tab2:
-        st.subheader("Buscador: Estado en el Último Reporte")
-        sitio_sel = st.selectbox("Seleccione Sitio:", sorted(df_ultima['Sitio'].unique()))
-        st.dataframe(df_ultima[df_ultima['Sitio'] == sitio_sel][['Subrack', 'Slot', 'Temp', 'Timestamp']], use_container_width=True, hide_index=True)
+    with t2:
+        sitio = st.selectbox("Buscar Sitio (Último reporte):", sorted(df_u['Sitio'].unique()))
+        st.dataframe(df_u[df_u['Sitio'] == sitio][['Subrack', 'Slot', 'Temp', 'Timestamp']], use_container_width=True, hide_index=True)
 
-    with tab3:
-        if df_hist is not None and not df_hist.empty:
-            st.subheader("Tendencia Semanal por Hora")
-            sitio_h = st.selectbox("Sitio para Histórico:", sorted(df_hist['Sitio'].unique()))
-            df_plot = df_hist[df_hist['Sitio'] == sitio_h]
-            
-            fig = px.line(df_plot, x='Fecha_Hora', y='Temp', color='ID_Full', markers=True,
-                         title=f"Evolución 7 días: {sitio_h}")
-            fig.update_xaxes(dtick="H24", tickformat="%d %b\n%H:%M")
+    with t3:
+        if df_h is not None and not df_h.empty:
+            sitio_h = st.selectbox("Histórico 7 días (Por hora):", sorted(df_h['Sitio'].unique()))
+            fig = px.line(df_h[df_h['Sitio'] == sitio_h], x='Hora', y='Temp', color='ID_Full', markers=True)
+            fig.update_layout(xaxis_title="Día / Hora", yaxis_title="Temp °C")
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay datos históricos suficientes para los últimos 7 días.")
 else:
-    st.warning("No se encontraron reportes recientes.")
+    st.warning("No se encontraron archivos en la carpeta 'Temperatura'.")
