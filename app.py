@@ -4,11 +4,11 @@ import re
 import os
 import plotly.express as px
 
-st.set_page_config(page_title="Monitor de Red Crítico", layout="wide")
+st.set_page_config(page_title="Monitor de Red - 50 Archivos", layout="wide")
 
-st.title("🚦 Monitor de Red: Alertas Críticas")
+st.title("🚦 Monitor de Red: Alertas Críticas (Top 50)")
 
-# --- FILTROS LATERALES ---
+# --- CONFIGURACIÓN ---
 st.sidebar.header("🛡️ Control de Red")
 UMBRAL_CRITICO = 65 
 
@@ -18,17 +18,17 @@ if st.sidebar.button("♻️ Forzar Recarga"):
 
 FOLDER_PATH = 'Temperatura'
 
-@st.cache_data(ttl=60) # Cache corto para actualizar rápido
-def procesar_red_veloz(folder):
+@st.cache_data(ttl=60)
+def procesar_red_50(folder):
     rows_list = []
     if not os.path.exists(folder): return None
     
-    # Listar y ordenar archivos por los más nuevos
+    # Obtener archivos y ordenar por fecha de modificación (más recientes primero)
     archivos = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".txt")]
     archivos.sort(key=os.path.getmtime, reverse=True)
     
-    # LEER SOLO LOS 5 MÁS RECIENTES para evitar que se quede pegado
-    for path in archivos[:5]:
+    # LIMITAR A LOS ÚLTIMOS 50 ARCHIVOS
+    for path in archivos[:50]:
         try:
             with open(path, 'r', encoding='latin-1', errors='ignore') as f:
                 content = f.read()
@@ -48,44 +48,63 @@ def procesar_red_veloz(folder):
     return pd.DataFrame(rows_list) if rows_list else None
 
 # --- EJECUCIÓN ---
-with st.spinner('Cargando alertas recientes...'):
-    df = procesar_red_veloz(FOLDER_PATH)
+with st.spinner('Procesando los últimos 50 reportes...'):
+    df = procesar_red_50(FOLDER_PATH)
 
 if df is not None and not df.empty:
-    # Obtener el último estado reportado de cada sitio
+    # Obtener el último estado reportado de cada componente
     df_actual = df.sort_values('Timestamp').groupby(['Sitio', 'Subrack', 'Slot']).last().reset_index()
     
-    # Filtrar solo los Críticos
-    criticos = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
-
     tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS CRÍTICAS", "📍 BUSCADOR SITIOS", "📈 TENDENCIAS"])
 
     with tab1:
-        st.subheader(f"Temperaturas >= {UMBRAL_CRITICO}°C")
-        if not criticos.empty:
-            cols = st.columns(4)
-            for i, (_, row) in enumerate(criticos.sort_values('Temp', ascending=False).iterrows()):
-                with cols[i % 4]:
-                    st.markdown(f"""
-                        <div style="background-color:#FFC7CE; padding:15px; border-radius:10px; text-align:center; border:2px solid #9C0006; margin-bottom:10px;">
-                            <p style="margin:0; font-weight:bold; color:#9C0006;">{row['Sitio']}</p>
-                            <h2 style="margin:5px 0; color:#9C0006;">{row['Temp']}°C</h2>
-                            <p style="margin:0; font-size:12px; color:#9C0006;">SUB {row['Subrack']} | SLOT {row['Slot']}</p>
-                            <b style="color:#9C0006;">🔴 ALERTA ROJA</b>
-                        </div>
-                    """, unsafe_allow_html=True)
+        st.subheader(f"Componentes Críticos (>= {UMBRAL_CRITICO}°C)")
+        
+        # Filtro por Slot dentro de la pestaña de alertas
+        todos_slots_criticos = sorted(df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]['Slot'].unique())
+        
+        if todos_slots_criticos:
+            slots_alertas = st.multiselect(
+                "Filtrar alertas por número de Slot:", 
+                options=todos_slots_criticos, 
+                default=todos_slots_criticos
+            )
+            
+            # Aplicar filtros: Temperatura >= 65 Y Slot seleccionado
+            criticos_filtrados = df_actual[
+                (df_actual['Temp'] >= UMBRAL_CRITICO) & 
+                (df_actual['Slot'].isin(slots_alertas))
+            ].sort_values('Temp', ascending=False)
+            
+            if not criticos_filtrados.empty:
+                cols = st.columns(4)
+                for i, (_, row) in enumerate(criticos_filtrados.iterrows()):
+                    with cols[i % 4]:
+                        st.markdown(f"""
+                            <div style="background-color:#FFC7CE; padding:15px; border-radius:10px; text-align:center; border:2px solid #9C0006; margin-bottom:10px;">
+                                <p style="margin:0; font-weight:bold; color:#9C0006;">{row['Sitio']}</p>
+                                <h2 style="margin:5px 0; color:#9C0006;">{row['Temp']}°C</h2>
+                                <p style="margin:0; font-size:12px; color:#9C0006;">SUB {row['Subrack']} | SLOT {row['Slot']}</p>
+                                <b style="color:#9C0006;">🔴 CRÍTICO</b>
+                            </div>
+                        """, unsafe_allow_html=True)
+            else:
+                st.info("No hay alertas para los slots seleccionados.")
         else:
-            st.success("✅ Red Estable. No hay componentes críticos.")
+            st.success("✅ Red Estable. No hay componentes por encima de 65°C.")
 
     with tab2:
         lista_s = sorted(df_actual['Sitio'].unique())
-        s_sel = st.selectbox("Elegir Sitio", lista_s)
-        df_s = df_actual[df_actual['Sitio'] == s_sel]
-        st.dataframe(df_s[['Subrack', 'Slot', 'Temp', 'Timestamp']], use_container_width=True)
+        s_sel = st.selectbox("Elegir Sitio para detalle completo", lista_s)
+        df_s = df_actual[df_actual['Sitio'] == s_sel].sort_values(['Subrack', 'Slot'])
+        st.dataframe(df_s[['Subrack', 'Slot', 'Temp', 'Timestamp']], use_container_width=True, hide_index=True)
 
     with tab3:
-        if len(df) > 1:
-            fig = px.line(df[df['Sitio'] == s_sel], x='Timestamp', y='Temp', color='ID_Full', markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+        # Histórico basado en los 50 archivos leídos
+        s_hist = st.selectbox("Elegir sitio para ver tendencias (Últimos 50 archivos)", lista_s, key="shist")
+        df_h = df[df['Sitio'] == s_hist]
+        fig = px.line(df_h, x='Timestamp', y='Temp', color='ID_Full', markers=True)
+        st.plotly_chart(fig, use_container_width=True)
+
 else:
-    st.warning("No se detectan datos nuevos. Verifique que haya archivos recientes en la carpeta 'Temperatura'.")
+    st.warning("No se encontraron datos. Verifique los archivos en la carpeta 'Temperatura'.")
