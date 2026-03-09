@@ -91,7 +91,7 @@ if archivos_total:
             if st.button("📊 Cargar Datos Históricos (Una sola vez)"):
                 with st.spinner("Procesando reportes... esto solo pasará una vez."):
                     # Guardamos el resultado en el cache maestro
-                    st.session_state["historico_df"] = procesar_todo_el_historico(archivos_total[:25])
+                    st.session_state["historico_df"] = procesar_todo_el_historico(archivos_total[:170])
                     st.session_state["datos_cargados"] = True
                     st.rerun()
         
