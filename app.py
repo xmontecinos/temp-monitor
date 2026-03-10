@@ -1,115 +1,122 @@
 import streamlit as st
 import pandas as pd
-import re
 import os
+import re
 import plotly.express as px
-from datetime import datetime
+import gc
 
-st.set_page_config(page_title="Monitor Red - Ultra Rápido", layout="wide")
+st.set_page_config(page_title="Monitor Red - Full Histórico", layout="wide")
 
 # --- CONFIGURACIÓN ---
-UMBRAL_CRITICO = 78 
+UMBRAL_CRITICO = 79 
 FOLDER_PATH = 'Temperatura'
 
-st.sidebar.header("🛡️ Control de Red")
-if st.sidebar.button("♻️ Forzar Recarga Total"):
-    st.cache_data.clear()
-    st.rerun()
-
-def extraer_datos_archivo(path):
+def extraer_datos_masivo(path):
+    """Escaneo profundo para capturar TODOS los sitios y filas de un archivo."""
+    rows = []
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
-            blocks = re.findall(r'NE Name:\s+([^\n\r]+).*?(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}).*?Display Board Temperature(.*?)\n---    END', content, re.DOTALL)
-            res = []
-            for ne_name, fecha, hora, table in blocks:
-                rows = re.findall(r'(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(?:\d+|NULL)', table)
-                for r in rows:
-                    res.append({
-                        "Timestamp": pd.to_datetime(f"{fecha} {hora}"),
-                        "Sitio": ne_name.strip(), 
-                        "Subrack": r[1], "Slot": int(r[2]),
-                        "Temp": int(r[3]), 
-                        "ID_Full": f"{ne_name.strip()} (S:{r[1]}-L:{r[2]})"
+            
+            # 1. Encontrar el Timestamp del reporte (común para todo el archivo)
+            ts_match = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', content)
+            if not ts_match: return []
+            ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
+
+            # 2. Dividir el archivo por bloques de "NE Name" para no mezclar sitios
+            bloques = re.split(r'NE Name\s*:\s*', content)
+            
+            for bloque in bloques[1:]: # Ignoramos el texto antes del primer sitio
+                lineas = bloque.split('\n')
+                nombre_sitio = lineas[0].strip().split()[0] # Primer palabra tras el ":"
+                
+                # 3. Buscar todas las filas de datos en este bloque
+                # Buscamos: Subrack(r[0]) Slot(r[1]) Temperatura(r[2])
+                filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
+                
+                for r in filas:
+                    rows.append({
+                        "Timestamp": ts,
+                        "Sitio": nombre_sitio,
+                        "Slot": int(r[1]),
+                        "Temp": int(r[2]),
+                        "ID_Full": f"{nombre_sitio} (S:{r[0]}-L:{r[1]})"
                     })
-            return res
-    except: return []
+    except: pass
+    return rows
 
-# --- CACHE MAESTRO PARA EL HISTÓRICO ---
-# Esta función guarda los datos en memoria para que NO se lean otra vez al cambiar de sitio
-@st.cache_data(ttl=300) # Guarda los datos por 5 minutos
-def procesar_todo_el_historico(lista_rutas):
-    all_data = []
-    for p in lista_rutas:
-        all_data.extend(extraer_datos_archivo(p))
-    df = pd.DataFrame(all_data)
-    if not df.empty:
-        df['Hora'] = df['Timestamp'].dt.floor('h')
-        # Reducimos el tamaño del archivo final agrupando
-        df = df.groupby(['Hora', 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
-    return df
-
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=60)
 def listar_archivos(folder):
     if not os.path.exists(folder): return []
-    archivos = [f for f in os.listdir(folder) if f.endswith(".txt")]
-    archivos.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
-    return [os.path.join(folder, f) for f in archivos]
+    # Captura .txt, .gz.txt y cualquier variante
+    fs = [os.path.join(folder, f) for f in os.listdir(folder) if ".txt" in f]
+    fs.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
+    return fs
 
-# --- LÓGICA PRINCIPAL ---
-archivos_total = listar_archivos(FOLDER_PATH)
+# --- INTERFAZ ---
+archivos_lista = listar_archivos(FOLDER_PATH)
 
-if archivos_total:
-    # Carga rápida del reporte actual
-    df_actual = pd.DataFrame(extraer_datos_archivo(archivos_total[0]))
+if archivos_lista:
+    # Carga automática del último reporte
+    if "df_now" not in st.session_state:
+        st.session_state["df_now"] = pd.DataFrame(extraer_datos_masivo(archivos_lista[0]))
     
-    tab1, tab2, tab3 = st.tabs(["🚨 ALERTA ÚLTIMA", "📍 BUSCADOR", "📈 HISTÓRICO 7D"])
+    df_actual = st.session_state["df_now"]
+    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO "])
 
     with tab1:
-        st.subheader(f"Último Reporte: {os.path.basename(archivos_total[0])}")
         if not df_actual.empty:
-            slots_f = sorted(df_actual['Slot'].unique())
-            sel_s = st.multiselect("Filtrar Slots:", slots_f, default=slots_f)
-            criticos = df_actual[(df_actual['Temp'] >= UMBRAL_CRITICO) & (df_actual['Slot'].isin(sel_s))]
+            st.write(f"**Reporte:** {os.path.basename(archivos_lista[0])} | **Sitios detectados:** {df_actual['Sitio'].nunique()}")
+            
+            slots = sorted(df_actual['Slot'].unique())
+            sel_slots = st.multiselect("Filtrar por Slots:", slots, default=slots)
+            
+            criticos = df_actual[(df_actual['Temp'] >= UMBRAL_CRITICO) & (df_actual['Slot'].isin(sel_slots))]
             if not criticos.empty:
+                # Mostrar en cuadricula
                 cols = st.columns(4)
                 for i, (_, r) in enumerate(criticos.sort_values('Temp', ascending=False).iterrows()):
                     with cols[i % 4]:
-                        st.error(f"**{r['Sitio']}** \n{r['Temp']}°C (S:{r['Subrack']} L:{r['Slot']})")
-            else: st.success("✅ Sin alertas.")
-
-    with tab2:
-        if not df_actual.empty:
-            sitio_sel = st.selectbox("Sitio:", sorted(df_actual['Sitio'].unique()), key="buscador_sitio")
-            st.dataframe(df_actual[df_actual['Sitio'] == sitio_sel], use_container_width=True)
+                        st.markdown(f"""<div style="background-color:#fee2e2; border:1px solid #dc2626; padding:10px; border-radius:8px; margin-bottom:10px; text-align:center;">
+                            <strong style="color:#991b1b;">{r['Sitio']}</strong><br>
+                            <span style="font-size:24px; font-weight:bold; color:#dc2626;">{r['Temp']}°C</span><br>
+                            <small>Slot: {r['Slot']}</small></div>""", unsafe_allow_html=True)
+            else: st.success("No hay alertas en los slots seleccionados.")
 
     with tab3:
-        st.subheader("Tendencia Semanal (Carga Inteligente)")
+        st.subheader(f"Tendencia extendida (Disponibles: {len(archivos_lista)} reportes)")
         
-        # El botón solo sirve para arrancar el proceso la primera vez
-        if "datos_cargados" not in st.session_state:
-            if st.button("📊 Cargar Datos Históricos (Una sola vez)"):
-                with st.spinner("Procesando reportes... esto solo pasará una vez."):
-                    # Guardamos el resultado en el cache maestro
-                    st.session_state["historico_df"] = procesar_todo_el_historico(archivos_total[:170])
-                    st.session_state["datos_cargados"] = True
-                    st.rerun()
+        # El usuario elige cuántos reportes cargar para no saturar si no es necesario
+        num_reportes = st.slider("Cantidad de reportes a procesar:", 100, min(100, len(archivos_lista)), 500)
         
-        # Si los datos ya están en el cache o en el estado de sesión, mostrar el gráfico al instante
-        if st.session_state.get("datos_cargados"):
-            df_h = st.session_state["historico_df"]
-            sitios_h = sorted(df_h['Sitio'].unique())
+        if st.button(f"📊 Cargar {num_reportes} Horas"):
+            all_data = []
+            progress = st.progress(0)
+            status = st.empty()
             
-            # Al cambiar este selectbox, la app NO volverá a leer los archivos .txt
-            s_h = st.selectbox("Elegir Sitio para tendencia:", sitios_h, key="historico_sitio")
+            for i, p in enumerate(archivos_lista[:num_reportes]):
+                status.text(f"Procesando {i+1}/{num_reportes}...")
+                all_data.extend(extraer_datos_masivo(p))
+                progress.progress((i + 1) / num_reportes)
+                if i % 15 == 0: gc.collect() # Evitar error "Failed to fetch"
+
+            if all_data:
+                df_h = pd.DataFrame(all_data)
+                # Agrupamos por hora para que el gráfico no sea lento
+                df_h['Hora'] = df_h['Timestamp'].dt.floor('h')
+                st.session_state["df_full"] = df_h.groupby(['Hora', 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
+                status.success(f"✅ ¡{num_reportes} horas cargadas! Sitios encontrados: {df_h['Sitio'].nunique()}")
+            else:
+                status.error("No se encontraron datos en el rango seleccionado.")
+
+        if "df_full" in st.session_state:
+            df_p = st.session_state["df_full"]
+            sitio_sel = st.selectbox("Seleccione el sitio para ver su gráfico:", sorted(df_p['Sitio'].unique()))
             
-            fig = px.line(df_h[df_h['Sitio'] == s_h], x='Hora', y='Temp', color='ID_Full', markers=True)
-            fig.update_layout(hovermode="x unified")
+            fig = px.line(df_p[df_p['Sitio'] == sitio_sel], 
+                         x='Hora', y='Temp', color='ID_Full', markers=True,
+                         title=f"Histórico 100h - {sitio_sel}")
             st.plotly_chart(fig, use_container_width=True)
-            
-            if st.button("🗑️ Limpiar Memoria Histórica"):
-                del st.session_state["datos_cargados"]
-                st.cache_data.clear()
-                st.rerun()
+
 else:
-    st.info("No hay archivos.")
+    st.error("No se detectaron archivos en la carpeta 'Temperatura'.")
