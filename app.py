@@ -4,119 +4,101 @@ import os
 import re
 import gc
 
-# 1. Configuración ultra-limpia (Evita inundación de logs)
-st.set_page_config(page_title="Monitor Red Estable", layout="wide")
+st.set_page_config(page_title="Monitor Red - Restauración Forzada", layout="wide")
 
 FOLDER_PATH = 'Temperatura'
 
-# Función de extracción optimizada para no saturar la RAM
-def extraer_datos(path):
+def extraer_flexible(path):
+    """Extrae datos buscando patrones numéricos, ignorando espacios variables."""
     rows = []
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             ts, sitio = None, "Desconocido"
             for line in f:
-                if not ts and "REPORT" in line:
+                # Captura Fecha
+                if "REPORT" in line:
                     m = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', line)
                     if m: ts = pd.to_datetime(f"{m.group(1)} {m.group(2)}")
-                if "NE Name" in line:
+                # Captura Sitio
+                if "NE Name" in line or "NE :" in line:
                     sitio = line.split(":")[-1].strip().split()[0]
                 
-                match = re.match(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', line)
-                if match and ts:
-                    rows.append({
-                        "Timestamp": ts, "Sitio": sitio,
-                        "ID": f"{sitio} (S:{match.group(1)}-L:{match.group(2)})",
-                        "Slot": int(match.group(2)), "Temp": int(match.group(3))
-                    })
+                # BUSCADOR FLEXIBLE: Busca líneas que terminen en números (temperatura)
+                # Formato esperado: [Cualquier cosa] Numero Numero Numero
+                partes = line.split()
+                if len(partes) >= 4 and partes[-1].isdigit() and partes[-2].isdigit():
+                    try:
+                        temp = int(partes[-1])
+                        slot = int(partes[-3])
+                        if 10 < temp < 120:  # Filtro de seguridad para temperaturas lógicas
+                            rows.append({
+                                "Timestamp": ts, "Sitio": sitio,
+                                "ID": f"{sitio} (Slot:{slot})",
+                                "Slot": slot, "Temp": temp
+                            })
+                    except: continue
     except: pass
     return rows
 
 @st.cache_data(ttl=300)
-def obtener_lista_archivos(folder):
+def listar_fs(folder):
     if not os.path.exists(folder): return []
-    # Filtra solo archivos .txt reales
-    fs = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith('.txt')]
-    fs.sort(reverse=True) # Los más nuevos primero
-    return fs
+    return sorted([os.path.join(folder, f) for f in os.listdir(folder) if ".txt" in f], reverse=True)
 
-# --- INICIO DE LA APP ---
-archivos = obtener_lista_archivos(FOLDER_PATH)
+# --- INICIO ---
+archivos = listar_fs(FOLDER_PATH)
 
 if not archivos:
-    st.error(f"⚠️ No se encontraron archivos en la carpeta '{FOLDER_PATH}'. Revisa tu repositorio de GitHub.")
+    st.error(f"No se ven archivos en '{FOLDER_PATH}'. Revisa GitHub.")
 else:
-    # Sidebar de emergencia
-    with st.sidebar:
-        st.title("🛡️ Sistema de Control")
-        if st.button("♻️ Reiniciar Conexión"):
-            st.cache_data.clear()
-            st.session_state.clear()
-            st.rerun()
-        st.write(f"Archivos detectados: {len(archivos)}")
+    st.sidebar.write(f"📂 Archivos: {len(archivos)}")
+    if st.sidebar.button("♻️ Limpiar Todo"):
+        st.cache_data.clear()
+        st.rerun()
 
-    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS", "🔍 BUSCADOR", "📈 HISTÓRICO"])
+    t1, t2, t3 = st.tabs(["🚨 ALERTAS", "🔍 BUSCADOR", "📈 HISTÓRICO"])
 
-    # PESTAÑA 1: ALERTAS (Debe aparecer sí o sí)
-    with tab1:
-        with st.spinner("Cargando reporte actual..."):
-            df_now = pd.DataFrame(extraer_datos(archivos[0]))
-        
-        if not df_now.empty:
-            st.subheader(f"Estado Actual: {os.path.basename(archivos[0])}")
-            criticos = df_now[df_now['Temp'] >= 79]
-            
+    # Carga inicial del reporte más nuevo
+    data_now = pd.DataFrame(extraer_flexible(archivos[0]))
+
+    with t1:
+        if not data_now.empty:
+            st.info(f"Reporte: {os.path.basename(archivos[0])}")
+            criticos = data_now[data_now['Temp'] >= 65].sort_values('Temp', ascending=False)
             if not criticos.empty:
                 cols = st.columns(4)
-                for i, (_, r) in enumerate(criticos.sort_values('Temp', ascending=False).iterrows()):
+                for i, (_, r) in enumerate(criticos.iterrows()):
                     with cols[i % 4]:
-                        # HTML simple para evitar errores de renderizado
-                        st.markdown(f"""<div style="background-color:#fee2e2; border:2px solid #dc2626; padding:15px; border-radius:10px; text-align:center; margin-bottom:10px;">
-                            <b style="color:#991b1b; font-size:18px;">{r['Sitio']}</b><br>
-                            <span style="font-size:28px; font-weight:bold; color:#dc2626;">{r['Temp']}°C</span><br>
-                            <small style="color:#450a0a;">Slot: {r['Slot']}</small></div>""", unsafe_allow_html=True)
-            else:
-                st.success("✅ Todas las temperaturas están en niveles normales.")
-        else:
-            st.warning("⚠️ El archivo más reciente parece estar vacío o tiene un formato incorrecto.")
+                        st.markdown(f"""<div style="background-color:#fee2e2; border:2px solid #dc2626; padding:10px; border-radius:10px; text-align:center; margin-bottom:10px;">
+                            <b style="color:#991b1b;">{r['Sitio']}</b><br>
+                            <span style="font-size:24px; font-weight:bold; color:#dc2626;">{r['Temp']}°C</span><br>
+                            <small>Slot: {r['Slot']}</small></div>""", unsafe_allow_html=True)
+            else: st.success("Temperaturas normales.")
+        else: st.warning("No se detectaron datos en el formato esperado.")
 
-    # PESTAÑA 2: BUSCADOR
-    with tab2:
-        if not df_now.empty:
-            sitios = sorted(df_now['Sitio'].unique())
-            s_sel = st.selectbox("Selecciona un sitio para ver detalles:", sitios)
-            # Nota: No usamos 'use_container_width' para evitar el error de los logs
-            st.table(df_now[df_now['Sitio'] == s_sel][['ID', 'Temp']].sort_values('Temp', ascending=False))
+    with t2:
+        if not data_now.empty:
+            s = st.selectbox("Sitio:", sorted(data_now['Sitio'].unique()))
+            st.table(data_now[data_now['Sitio'] == s][['ID', 'Temp']])
 
-    # PESTAÑA 3: HISTÓRICO (El punto donde se cae)
-    with tab3:
-        st.subheader("Análisis de Tendencia")
-        horas = st.slider("Horas a analizar:", 12, min(len(archivos), 300), 72)
-        
-        if st.button(f"📊 Procesar {horas} Horas"):
-            all_rows = []
-            prog = st.progress(0)
-            status_text = st.empty()
+    with t3:
+        horas = st.slider("Horas:", 10, len(archivos), 72)
+        if st.button("📊 Generar Gráfico"):
+            all_data = []
+            p = st.progress(0)
+            for i, f in enumerate(archivos[:horas]):
+                all_data.extend(extraer_flexible(f))
+                if i % 30 == 0:
+                    p.progress((i+1)/horas)
+                    gc.collect()
             
-            # Procesamiento con limpieza de RAM forzada
-            for i, p in enumerate(archivos[:horas]):
-                all_rows.extend(extraer_datos(p))
-                if i % 25 == 0:
-                    prog.progress((i + 1) / horas)
-                    status_text.text(f"Analizando: {i+1}/{horas} reportes...")
-                    gc.collect() # Libera RAM inmediatamente
-            
-            if all_rows:
-                df_h = pd.DataFrame(all_rows)
+            if all_data:
+                df_h = pd.DataFrame(all_data)
                 df_h['Hora'] = df_h['Timestamp'].dt.floor('h')
-                # Guardamos solo lo necesario para el gráfico
-                st.session_state["h_limpio"] = df_h.groupby(['Hora', 'Sitio', 'ID'])['Temp'].max().reset_index()
-                status_text.success(f"✅ ¡{horas} horas cargadas con éxito!")
-            else:
-                status_text.error("No se pudieron extraer datos de los archivos seleccionados.")
-
-        if "h_limpio" in st.session_state:
-            df_p = st.session_state["h_limpio"]
-            sitio_gr = st.selectbox("Ver gráfico de:", sorted(df_p['Sitio'].unique()), key="gr_hist")
-            fig = px.line(df_p[df_p['Sitio'] == sitio_gr], x='Hora', y='Temp', color='ID', markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+                st.session_state['h_data'] = df_h.groupby(['Hora', 'Sitio', 'ID'])['Temp'].max().reset_index()
+                st.success("Cargado.")
+            
+        if 'h_data' in st.session_state:
+            df_p = st.session_state['h_data']
+            sel = st.selectbox("Sitio:", sorted(df_p['Sitio'].unique()), key="h_sel")
+            st.plotly_chart(px.line(df_p[df_p['Sitio'] == sel], x='Hora', y='Temp', color='ID', markers=True))
