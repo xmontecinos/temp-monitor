@@ -8,7 +8,7 @@ import gc
 st.set_page_config(page_title="Monitor Red - Full Histórico", layout="wide")
 
 # --- CONFIGURACIÓN ---
-UMBRAL_CRITICO = 65 
+UMBRAL_CRITICO = 79 
 FOLDER_PATH = 'Temperatura'
 
 def extraer_datos_masivo(path):
@@ -62,7 +62,7 @@ if archivos_lista:
         st.session_state["df_now"] = pd.DataFrame(extraer_datos_masivo(archivos_lista[0]))
     
     df_actual = st.session_state["df_now"]
-    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO 100H"])
+    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO "])
 
     with tab1:
         if not df_actual.empty:
@@ -87,7 +87,7 @@ if archivos_lista:
         st.subheader(f"Tendencia extendida (Disponibles: {len(archivos_lista)} reportes)")
         
         # El usuario elige cuántos reportes cargar para no saturar si no es necesario
-        num_reportes = st.slider("Cantidad de reportes a procesar:", 10, min(100, len(archivos_lista)), 100)
+        num_reportes = st.slider("Cantidad de reportes a procesar:", 100, min(100, len(archivos_lista)), 500)
         
         if st.button(f"📊 Cargar {num_reportes} Horas"):
             all_data = []
