@@ -5,13 +5,13 @@ import re
 import plotly.express as px
 import gc
 
-# Configuración sin parámetros obsoletos
-st.set_page_config(page_title="Monitor Red - Estabilidad Máxima", layout="wide")
+# Configuración sin parámetros obsoletos según logs
+st.set_page_config(page_title="Monitor Red - Estabilidad Final", layout="wide")
 
 FOLDER_PATH = 'Temperatura'
 
-def procesar_archivo_liviano(path):
-    """Extrae datos de forma minimalista para proteger la RAM."""
+def extraccion_segura(path):
+    """Procesa el archivo línea a línea para evitar picos de RAM."""
     rows = []
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
@@ -31,35 +31,35 @@ def procesar_archivo_liviano(path):
                         "ID": f"{sitio} (S:{match.group(1)}-L:{match.group(2)})",
                         "Slot": int(match.group(2)), "Temp": int(match.group(3))
                     })
-    except: pass
+    except Exception:
+        pass
     return rows
 
 @st.cache_data(ttl=300)
-def listar_archivos_frio(folder):
+def listar_archivos(folder):
     if not os.path.exists(folder): return []
     fs = [os.path.join(folder, f) for f in os.listdir(folder) if ".txt" in f]
     fs.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
     return fs
 
-# --- INTERFAZ ---
-archivos = listar_archivos_frio(FOLDER_PATH)
+# --- LÓGICA DE INTERFAZ ---
+archivos = listar_archivos(FOLDER_PATH)
 
 if archivos:
-    st.sidebar.title("🛠️ Panel de Control")
-    # Botón de reinicio completo para liberar RAM del servidor
-    if st.sidebar.button("♻️ Forzar Limpieza Total"):
+    st.sidebar.title("Configuración")
+    if st.sidebar.button("♻️ Reiniciar Memoria"):
         st.cache_data.clear()
         st.session_state.clear()
         st.rerun()
 
-    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS", "🔍 BUSCADOR", "📈 HISTÓRICO MASIVO"])
+    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO MASIVO"])
 
     # 1. ALERTAS (Reporte más reciente)
     with tab1:
-        df_now = pd.DataFrame(procesar_archivo_liviano(archivos[0]))
+        df_now = pd.DataFrame(extraccion_segura(archivos[0]))
         if not df_now.empty:
-            st.info(f"Reporte Actual: {os.path.basename(archivos[0])}")
-            # Cuadros de alerta (Estilo visual original)
+            st.info(f"Último Reporte: {os.path.basename(archivos[0])}")
+            # Cuadros de alerta visuales
             criticos = df_now[df_now['Temp'] >= 65]
             if not criticos.empty:
                 cols = st.columns(4)
@@ -69,11 +69,48 @@ if archivos:
                             <strong style="color:#991b1b;">{r['Sitio']}</strong><br>
                             <span style="font-size:24px; font-weight:bold; color:#dc2626;">{r['Temp']}°C</span><br>
                             <small>Slot: {r['Slot']}</small></div>""", unsafe_allow_html=True)
-            else: st.success("✅ Temperaturas bajo control.")
-        else:
-            st.warning("No se pudo leer el reporte más reciente.")
+            else: st.success("Todo en orden.")
 
-    # 2. BUSCADOR
+    # 2. BUSCADOR (Sin parámetros obsoletos)
     with tab2:
         if not df_now.empty:
-            s_busq =
+            s_busq = st.selectbox("Sitio:", sorted(df_now['Sitio'].unique()))
+            # Se usa width=None para evitar la advertencia del log
+            st.dataframe(df_now[df_now['Sitio'] == s_busq], width=None)
+
+    # 3. HISTÓRICO MASIVO (Optimizado para evitar error rosa)
+    with tab3:
+        st.subheader("Carga de Datos de Larga Duración")
+        limite = st.slider("Horas a cargar:", 24, len(archivos), 168)
+        
+        if st.button(f"📊 Procesar {limite} Horas"):
+            datos_acumulados = []
+            progreso = st.progress(0)
+            status = st.empty()
+            
+            # PROCESAMIENTO POR LOTES PARA PROTEGER RAM
+            for i, p in enumerate(archivos[:limite]):
+                datos_acumulados.extend(extraccion_segura(p))
+                
+                # Liberar memoria cada 20 archivos
+                if (i + 1) % 20 == 0 or (i + 1) == limite:
+                    progreso.progress((i + 1) / limite)
+                    status.text(f"Cargados {i+1} de {limite} reportes...")
+                    gc.collect() 
+
+            if datos_acumulados:
+                df_h = pd.DataFrame(datos_acumulados)
+                df_h['Hora'] = df_h['Timestamp'].dt.floor('h')
+                # Resumen para gráfico ligero
+                st.session_state["h_final"] = df_h.groupby(['Hora', 'Sitio', 'ID'])['Temp'].max().reset_index()
+                status.success("✅ Datos cargados correctamente.")
+            else:
+                status.error("No se detectaron datos. Revisa la carpeta de origen.")
+
+        if "h_final" in st.session_state:
+            df_plot = st.session_state["h_final"]
+            s_sel = st.selectbox("Elegir sitio para gráfico:", sorted(df_plot['Sitio'].unique()))
+            fig = px.line(df_plot[df_plot['Sitio'] == s_sel], x='Hora', y='Temp', color='ID', markers=True)
+            st.plotly_chart(fig, theme="streamlit")
+else:
+    st.error("No se detectó la carpeta 'Temperatura'.")
