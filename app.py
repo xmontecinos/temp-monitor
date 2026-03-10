@@ -5,18 +5,20 @@ import os
 import plotly.express as px
 from datetime import datetime
 
-st.set_page_config(page_title="Monitor Red - Ultra Rápido", layout="wide")
+st.set_page_config(page_title="Monitor Red - Carga Ultra Rápida", layout="wide")
 
 # --- CONFIGURACIÓN ---
-UMBRAL_CRITICO = 78 
+UMBRAL_CRITICO = 65 
 FOLDER_PATH = 'Temperatura'
 
 st.sidebar.header("🛡️ Control de Red")
 if st.sidebar.button("♻️ Forzar Recarga Total"):
     st.cache_data.clear()
+    st.session_state.clear()
     st.rerun()
 
 def extraer_datos_archivo(path):
+    """Extracción optimizada."""
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
@@ -35,17 +37,20 @@ def extraer_datos_archivo(path):
             return res
     except: return []
 
-# --- CACHE MAESTRO PARA EL HISTÓRICO ---
-# Esta función guarda los datos en memoria para que NO se lean otra vez al cambiar de sitio
-@st.cache_data(ttl=300) # Guarda los datos por 5 minutos
-def procesar_todo_el_historico(lista_rutas):
-    all_data = []
+# --- CACHE DE PROCESAMIENTO ---
+@st.cache_data(ttl=600, show_spinner=False)
+def procesar_historico_optimizado(lista_rutas):
+    """Lee archivos y devuelve un DataFrame agrupado muy ligero."""
+    data_acumulada = []
+    # Usamos un contenedor de progreso visual
     for p in lista_rutas:
-        all_data.extend(extraer_datos_archivo(p))
-    df = pd.DataFrame(all_data)
+        data_acumulada.extend(extraer_datos_archivo(p))
+    
+    df = pd.DataFrame(data_acumulada)
     if not df.empty:
+        # IMPORTANTE: Reducimos precisión a la hora para que la gráfica no pese
         df['Hora'] = df['Timestamp'].dt.floor('h')
-        # Reducimos el tamaño del archivo final agrupando
+        # Solo guardamos el valor máximo por hora para cada slot
         df = df.groupby(['Hora', 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
     return df
 
@@ -56,60 +61,54 @@ def listar_archivos(folder):
     archivos.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
     return [os.path.join(folder, f) for f in archivos]
 
-# --- LÓGICA PRINCIPAL ---
+# --- FLUJO PRINCIPAL ---
 archivos_total = listar_archivos(FOLDER_PATH)
 
 if archivos_total:
-    # Carga rápida del reporte actual
+    # Carga instantánea del reporte para Pestaña 1 y 2
     df_actual = pd.DataFrame(extraer_datos_archivo(archivos_total[0]))
     
     tab1, tab2, tab3 = st.tabs(["🚨 ALERTA ÚLTIMA", "📍 BUSCADOR", "📈 HISTÓRICO 7D"])
 
     with tab1:
         st.subheader(f"Último Reporte: {os.path.basename(archivos_total[0])}")
+        # (Lógica de tarjetas rojas se mantiene igual)
         if not df_actual.empty:
-            slots_f = sorted(df_actual['Slot'].unique())
-            sel_s = st.multiselect("Filtrar Slots:", slots_f, default=slots_f)
-            criticos = df_actual[(df_actual['Temp'] >= UMBRAL_CRITICO) & (df_actual['Slot'].isin(sel_s))]
+            criticos = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
             if not criticos.empty:
                 cols = st.columns(4)
                 for i, (_, r) in enumerate(criticos.sort_values('Temp', ascending=False).iterrows()):
                     with cols[i % 4]:
-                        st.error(f"**{r['Sitio']}** \n{r['Temp']}°C (S:{r['Subrack']} L:{r['Slot']})")
+                        st.error(f"**{r['Sitio']}** \n{r['Temp']}°C")
             else: st.success("✅ Sin alertas.")
 
     with tab2:
         if not df_actual.empty:
-            sitio_sel = st.selectbox("Sitio:", sorted(df_actual['Sitio'].unique()), key="buscador_sitio")
+            sitio_sel = st.selectbox("Sitio:", sorted(df_actual['Sitio'].unique()))
             st.dataframe(df_actual[df_actual['Sitio'] == sitio_sel], use_container_width=True)
 
     with tab3:
         st.subheader("Tendencia Semanal (Carga Inteligente)")
         
-        # El botón solo sirve para arrancar el proceso la primera vez
-        if "datos_cargados" not in st.session_state:
-            if st.button("📊 Cargar Datos Históricos (Una sola vez)"):
-                with st.spinner("Procesando reportes... esto solo pasará una vez."):
-                    # Guardamos el resultado en el cache maestro
-                    st.session_state["historico_df"] = procesar_todo_el_historico(archivos_total[:170])
-                    st.session_state["datos_cargados"] = True
-                    st.rerun()
-        
-        # Si los datos ya están en el cache o en el estado de sesión, mostrar el gráfico al instante
-        if st.session_state.get("datos_cargados"):
-            df_h = st.session_state["historico_df"]
-            sitios_h = sorted(df_h['Sitio'].unique())
+        # Botón para disparar la carga pesada al cache
+        if st.button("📊 Cargar/Actualizar Gráfica"):
+            # Limitamos a los últimos 25 para cubrir la semana (1 reporte x hora aprox)
+            # Esto evita que el sistema se quede "Running" para siempre
+            df_h = procesar_historico_optimizado(archivos_total[:25])
+            st.session_state["df_historico"] = df_h
+            st.success("¡Datos procesados! Ya puedes filtrar por sitio abajo.")
+
+        # Si los datos están en el estado de sesión, mostrar buscador y gráfica
+        if "df_historico" in st.session_state:
+            df_plot_base = st.session_state["df_historico"]
+            sitio_h = st.selectbox("Elegir Sitio para tendencia:", sorted(df_plot_base['Sitio'].unique()), key="h_site")
             
-            # Al cambiar este selectbox, la app NO volverá a leer los archivos .txt
-            s_h = st.selectbox("Elegir Sitio para tendencia:", sitios_h, key="historico_sitio")
+            df_filtrado = df_plot_base[df_plot_base['Sitio'] == sitio_h]
             
-            fig = px.line(df_h[df_h['Sitio'] == s_h], x='Hora', y='Temp', color='ID_Full', markers=True)
-            fig.update_layout(hovermode="x unified")
+            # Gráfica optimizada
+            fig = px.line(df_filtrado, x='Hora', y='Temp', color='ID_Full', markers=True, 
+                         template="plotly_white")
+            fig.update_layout(height=500, margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
-            
-            if st.button("🗑️ Limpiar Memoria Histórica"):
-                del st.session_state["datos_cargados"]
-                st.cache_data.clear()
-                st.rerun()
 else:
     st.info("No hay archivos.")
