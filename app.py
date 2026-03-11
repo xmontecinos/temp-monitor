@@ -105,22 +105,57 @@ if archivos_lista:
                 if (i + 1) % 10 == 0:
                     status.text(f"Procesando {i+1}/{num_reportes}...")
                     progress.progress((i + 1) / num_reportes)
-                    gc.collect() # Limpieza frecuente
+                    gc.collect() 
 
             if all_data:
                 df_h = pd.DataFrame(all_data)
-                df_h['Hora'] = df_h['Timestamp'].dt.floor('h')
-                # Resumen para aligerar el gráfico Plotly
-                st.session_state["df_full"] = df_h.groupby(['Hora', 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
+                # Agrupamos por hora, sitio e ID_Full para el histórico
+                st.session_state["df_full"] = df_h.groupby([df_h['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
                 status.success(f"✅ ¡{num_reportes} horas cargadas!")
             else:
                 status.error("No se encontraron datos.")
 
+        # --- AQUÍ EMPIEZA LA NUEVA LÓGICA DE SELECCIÓN ---
         if "df_full" in st.session_state:
             df_p = st.session_state["df_full"]
-            sitio_sel = st.selectbox("Seleccione sitio:", sorted(df_p['Sitio'].unique()))
-            fig = px.line(df_p[df_p['Sitio'] == sitio_sel], x='Hora', y='Temp', color='ID_Full', markers=True)
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # 1. Filtro de Sitio (necesario para acotar los IDs)
+            sitio_sel = st.selectbox("Seleccione sitio para graficar:", sorted(df_p['Sitio'].unique()))
+            
+            # 2. Obtener los IDs únicos de ese sitio en particular
+            df_sitio = df_p[df_p['Sitio'] == sitio_sel]
+            ids_unicos = sorted(df_sitio['ID_Full'].unique())
 
+            # 3. Botones para selección masiva
+            st.write("Selección rápida de IDs:")
+            col_b1, col_b2 = st.columns(2)
+            
+            if col_b1.button("✅ Seleccionar Todos", use_container_width=True):
+                st.session_state["ids_seleccionados"] = ids_unicos
+            
+            if col_b2.button("❌ Limpiar Selección", use_container_width=True):
+                st.session_state["ids_seleccionados"] = []
+
+            # 4. El Multiselect conectado al estado de sesión
+            seleccion_final = st.multiselect(
+                "Elija los Slots/IDs a visualizar:",
+                options=ids_unicos,
+                default=st.session_state.get("ids_seleccionados", ids_unicos)
+            )
+
+            # 5. Graficar solo lo seleccionado
+            if seleccion_final:
+                df_grafico = df_sitio[df_sitio['ID_Full'].isin(seleccion_final)]
+                fig = px.line(
+                    df_grafico, 
+                    x='Timestamp', 
+                    y='Temp', 
+                    color='ID_Full', 
+                    markers=True,
+                    title=f"Evolución de Temperatura - {sitio_sel}"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("💡 Por favor, selecciona al menos un ID para generar la gráfica.")
 else:
     st.error("No se detectaron archivos en la carpeta 'Temperatura'.")
