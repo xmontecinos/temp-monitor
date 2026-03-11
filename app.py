@@ -7,6 +7,7 @@ import plotly.express as px
 # 1. Configuración de página
 st.set_page_config(page_title="Monitor Red", layout="wide")
 
+# NUEVOS UMBRALES DEFINIDOS
 UMBRAL_CRITICO = 78 
 UMBRAL_PREVENTIVO = 60
 FOLDER_PATH = 'Temperatura'
@@ -57,7 +58,7 @@ if archivos_lista:
 
     with tab_dash:
         if not df_actual.empty:
-            # Metadatos
+            # Metadatos superiores
             ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
             total_sitios_red = df_actual['Sitio'].nunique()
             
@@ -66,35 +67,53 @@ if archivos_lista:
             c_info1.info(f"🕒 **Último reporte:** {ultima_hora}")
             c_info2.info(f"📍 **Sitios únicos procesados:** {total_sitios_red}")
 
-            # --- LÓGICA DE JERARQUÍA PARA QUE LOS SITIOS CUADREN ---
-            # Sacamos la temperatura máxima por sitio
+            # Lógica de jerarquía para Sitios (Asegura que la suma cuadre)
             df_sitios_max = df_actual.groupby('Sitio')['Temp'].max().reset_index()
-            
-            # Clasificamos sitios (Un sitio pertenece a UNA sola categoría)
             s_crit = df_sitios_max[df_sitios_max['Temp'] >= UMBRAL_CRITICO]
             s_prev = df_sitios_max[(df_sitios_max['Temp'] >= UMBRAL_PREVENTIVO) & (df_sitios_max['Temp'] < UMBRAL_CRITICO)]
             s_ok = df_sitios_max[df_sitios_max['Temp'] < UMBRAL_PREVENTIVO]
 
-            # Clasificación de TARJETAS (conteo individual)
+            # Conteo de Tarjetas Individuales
             t_crit = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
             t_prev = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
             t_ok = df_actual[df_actual['Temp'] < UMBRAL_PREVENTIVO]
 
-            # Semáforo
+            # --- SEMÁFORO CON NUEVOS UMBRALES ---
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Tarjetas", len(df_actual))
+            m1.metric("Total Tarjetas", f"{len(df_actual):,}")
             
             with m2:
-                st.markdown(f'<div style="background-color:#fee2e2; border:1px solid #dc2626; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#991b1b; margin:0;">CRÍTICO</h4><h1 style="color:#dc2626; margin:0;">{len(t_crit)}</h1><small>En <b>{len(s_crit)}</b> sitios</small></div>', unsafe_allow_html=True)
+                st.markdown(f'''
+                    <div style="background-color:#fee2e2; border:2px solid #dc2626; padding:15px; border-radius:10px; text-align:center;">
+                        <h4 style="color:#991b1b; margin:0;">CRÍTICO</h4>
+                        <p style="color:#dc2626; margin:0; font-size:0.9em; font-weight:bold;">≥ {UMBRAL_CRITICO}°C</p>
+                        <h1 style="color:#dc2626; margin:5px 0;">{len(t_crit)}</h1>
+                        <small style="color:#991b1b;">En <b>{len(s_crit)}</b> sitios</small>
+                    </div>''', unsafe_allow_html=True)
+            
             with m3:
-                st.markdown(f'<div style="background-color:#fef9c3; border:1px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4><h1 style="color:#ca8a04; margin:0;">{len(t_prev)}</h1><small>En <b>{len(s_prev)}</b> sitios</small></div>', unsafe_allow_html=True)
+                st.markdown(f'''
+                    <div style="background-color:#fef9c3; border:2px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;">
+                        <h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4>
+                        <p style="color:#ca8a04; margin:0; font-size:0.9em; font-weight:bold;">{UMBRAL_PREVENTIVO}°C a {UMBRAL_CRITICO-1}°C</p>
+                        <h1 style="color:#ca8a04; margin:5px 0;">{len(t_prev)}</h1>
+                        <small style="color:#854d0e;">En <b>{len(s_prev)}</b> sitios</small>
+                    </div>''', unsafe_allow_html=True)
+            
             with m4:
-                st.markdown(f'<div style="background-color:#dcfce7; border:1px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><h1 style="color:#16a34a; margin:0;">{len(t_ok)}</h1><small>En <b>{len(s_ok)}</b> sitios</small></div>', unsafe_allow_html=True)
+                st.markdown(f'''
+                    <div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;">
+                        <h4 style="color:#166534; margin:0;">ÓPTIMO</h4>
+                        <p style="color:#16a34a; margin:0; font-size:0.9em; font-weight:bold;">< {UMBRAL_PREVENTIVO}°C</p>
+                        <h1 style="color:#16a34a; margin:5px 0;">{len(t_ok)}</h1>
+                        <small style="color:#166534;">En <b>{len(s_ok)}</b> sitios</small>
+                    </div>''', unsafe_allow_html=True)
 
             st.divider()
             
+            # Ranking de Slots
             if not t_crit.empty:
-                st.subheader("🔝 Top 10 Slots Críticos (Toda la Red)")
+                st.subheader("🔝 Top 10 Slots Críticos")
                 res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant').sort_values('Cant', ascending=False).head(10)
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
                 fig_bar = px.bar(res_slots, x='Slot_Label', y='Cant', text='Cant', color='Cant', color_continuous_scale='Reds')
