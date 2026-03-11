@@ -89,88 +89,91 @@ if archivos_lista:
     # Definición de Pestañas
     tab_dash, tab_alertas, tab_busq, tab_hist = st.tabs(["📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"])
 
-   # --- PESTAÑA 0: DASHBOARD (Con desglose de sitios críticos) ---
+# --- PESTAÑA 0: DASHBOARD (Top 10 Slots Críticos) ---
     with tab_dash:
         if not df_actual.empty:
-            st.title("Monitor de Salud de Red")
+            st.title("📊 Monitor Global de Red")
             
-            # 1. Filtrado de datos por categorías
+            # 1. Clasificación de datos
             criticas_df = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
             prev_df = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
             ok_df = df_actual[df_actual['Temp'] < UMBRAL_PREVENTIVO]
 
-            # 2. Resumen de Sitios
-            sitios_criticos = criticas_df['Sitio'].nunique()
-            sitios_prev = prev_df['Sitio'].nunique()
-            sitios_ok = ok_df['Sitio'].nunique()
-
-            # 3. Semáforo de Métricas
+            # 2. Métricas principales (Semáforo)
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Tarjetas", len(df_actual), f"{df_actual['Sitio'].nunique()} Sitios Totales")
+            m1.metric("Total Tarjetas", len(df_actual), f"{df_actual['Sitio'].nunique()} Sitios")
             
             with m2:
                 st.markdown(f"""<div style="background-color:#fee2e2; border:1px solid #dc2626; padding:15px; border-radius:10px; text-align:center;">
                     <h4 style="color:#991b1b; margin:0;">CRÍTICO</h4>
                     <h1 style="color:#dc2626; margin:0; line-height:1;">{len(criticas_df)}</h1>
-                    <small style="color:#991b1b;">En <b>{sitios_criticos}</b> sitios</small>
+                    <small style="color:#991b1b;">Tarjetas ≥ {UMBRAL_CRITICO}°C</small>
                 </div>""", unsafe_allow_html=True)
-                if len(criticas_df) > 0:
-                    st.write("") 
-                    if st.button("Ver Detalle Alertas ➔", key="btn_dash_alertas"):
+                if not criticas_df.empty:
+                    st.write("")
+                    if st.button("Ver Detalle en Alertas ➔", key="btn_dash_to_alert"):
                         cambiar_tab("🚨 ALERTAS ACTUALES")
 
             with m3:
                 st.markdown(f"""<div style="background-color:#fef9c3; border:1px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;">
                     <h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4>
                     <h1 style="color:#ca8a04; margin:0; line-height:1;">{len(prev_df)}</h1>
-                    <small style="color:#854d0e;">En <b>{sitios_prev}</b> sitios</small>
+                    <small style="color:#854d0e;">{UMBRAL_PREVENTIVO}°C a {UMBRAL_CRITICO}°C</small>
                 </div>""", unsafe_allow_html=True)
 
             with m4:
                 st.markdown(f"""<div style="background-color:#dcfce7; border:1px solid #16a34a; padding:15px; border-radius:10px; text-align:center;">
-                    <h4 style="color:#166534; margin:0;">OPTIMO</h4>
+                    <h4 style="color:#166534; margin:0;">ÓPTIMO</h4>
                     <h1 style="color:#16a34a; margin:0; line-height:1;">{len(ok_df)}</h1>
-                    <small style="color:#166534;">En <b>{sitios_ok}</b> sitios</small>
+                    <small style="color:#166534;">Bajo {UMBRAL_PREVENTIVO}°C</small>
                 </div>""", unsafe_allow_html=True)
 
             st.divider()
 
-            # 4. Sección de Detalle: ¿Dónde están los críticos?
-            col_chart, col_table = st.columns([1.5, 1])
+            # 3. Análisis de Slots (Top 10)
+            st.subheader("🔝 Top 10 Slots con Mayor Incidencia Crítica")
+            
+            if not criticas_df.empty:
+                col_chart, col_table = st.columns([1.5, 1])
+                
+                # Agrupamos por SLOT para ver cuál es el que más falla a nivel nacional
+                resumen_slots = (
+                    criticas_df.groupby('Slot')
+                    .size()
+                    .reset_index(name='Cantidad_Criticas')
+                    .sort_values(by='Cantidad_Criticas', ascending=False)
+                    .head(10)
+                )
+                
+                # Convertimos Slot a String para que el gráfico no lo trate como número continuo
+                resumen_slots['Slot_Label'] = "Slot " + resumen_slots['Slot'].astype(str)
 
-            with col_chart:
-                df_pie = pd.DataFrame({
-                    "Estado": ["Crítico", "Preventivo", "Normal"], 
-                    "Cant": [len(criticas_df), len(prev_df), len(ok_df)]
-                })
-                fig_pie = px.pie(df_pie, values='Cant', names='Estado', hole=0.5,
-                               color='Estado', color_discrete_map={'Crítico':'#dc2626', 'Preventivo':'#facc15', 'Normal':'#22c55e'},
-                               title="Distribución de Carga Térmica")
-                st.plotly_chart(fig_pie, use_container_width=True)
+                with col_chart:
+                    fig_bar = px.bar(
+                        resumen_slots, 
+                        x='Slot_Label', 
+                        y='Cantidad_Criticas',
+                        text='Cantidad_Criticas',
+                        color='Cantidad_Criticas',
+                        color_continuous_scale='Reds',
+                        labels={'Slot_Label': 'Número de Slot', 'Cantidad_Criticas': 'Tarjetas Críticas'},
+                        title="Ranking de Falla por Slot"
+                    )
+                    fig_bar.update_traces(textposition='outside')
+                    st.plotly_chart(fig_bar, use_container_width=True)
 
-            with col_table:
-                st.subheader("📍 Sitios con Tarjetas Críticas")
-                if not criticas_df.empty:
-                    # Agrupar por sitio y contar cuántas tarjetas críticas tiene cada uno
-                    resumen_critico = (
-                        criticas_df.groupby('Sitio')
-                        .size()
-                        .reset_index(name='Tarjetas Críticas')
-                        .sort_values(by='Tarjetas Críticas', ascending=False)
+                with col_table:
+                    st.write("### Detalle Numérico")
+                    # Renombrar para mayor claridad en la tabla
+                    tabla_format = resumen_slots[['Slot_Label', 'Cantidad_Criticas']].rename(
+                        columns={'Slot_Label': 'Ubicación Física', 'Cantidad_Criticas': 'Tarjetas en Rojo'}
                     )
+                    st.table(tabla_format)
                     
-                    # Mostrar tabla estilizada
-                    st.dataframe(
-                        resumen_critico, 
-                        hide_index=True, 
-                        use_container_width=True
-                    )
-                    
-                    # Pequeño aviso visual
-                    max_sitio = resumen_critico.iloc[0]['Sitio']
-                    st.warning(f"⚠️ El sitio **{max_sitio}** es el más afectado.")
-                else:
-                    st.success("✅ No hay sitios con criticidad actualmente.")
+                    max_slot = resumen_slots.iloc[0]['Slot']
+                    st.error(f"🚨 Atención: El **Slot {max_slot}** es el punto más vulnerable de la red actualmente.")
+            else:
+                st.success("✅ Excelente: No hay tarjetas críticas para generar un ranking de fallas.")
 
     # --- PESTAÑA 1: ALERTAS ---
     with tab_alertas:
