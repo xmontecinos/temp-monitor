@@ -8,7 +8,7 @@ import gc
 # 1. Configuración de página
 st.set_page_config(page_title="Monitor Red - Full Histórico", layout="wide")
 
-UMBRAL_CRITICO = 79 
+UMBRAL_CRITICO = 75 
 UMBRAL_PREVENTIVO = 60
 FOLDER_PATH = 'Temperatura'
 
