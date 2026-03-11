@@ -8,8 +8,8 @@ import gc
 # 1. Configuración de página
 st.set_page_config(page_title="Monitor Red - Full Histórico", layout="wide")
 
-UMBRAL_CRITICO = 65 
-UMBRAL_PREVENTIVO = 55
+UMBRAL_CRITICO = 79 
+UMBRAL_PREVENTIVO = 60
 FOLDER_PATH = 'Temperatura'
 
 # --- FUNCIONES DE EXTRACCIÓN ---
@@ -89,46 +89,58 @@ if archivos_lista:
     # Definición de Pestañas
     tab_dash, tab_alertas, tab_busq, tab_hist = st.tabs(["📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"])
 
-    # --- PESTAÑA 0: DASHBOARD ---
+    # --- PESTAÑA 0: DASHBOARD (Actualizada con conteo de sitios) ---
     with tab_dash:
         if not df_actual.empty:
             st.title("Monitor de Salud de Red")
             
-            # Cálculos
-            total_t = len(df_actual)
-            criticas = len(df_actual[df_actual['Temp'] >= UMBRAL_CRITICO])
-            prev = len(df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)])
-            ok = total_t - criticas - prev
+            # 1. Cálculos de Tarjetas
+            criticas_df = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
+            prev_df = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
+            ok_df = df_actual[df_actual['Temp'] < UMBRAL_PREVENTIVO]
 
-            # Semáforo
+            # 2. Cálculos de Sitios Únicos
+            sitios_criticos = criticas_df['Sitio'].nunique()
+            sitios_prev = prev_df['Sitio'].nunique()
+            sitios_ok = ok_df['Sitio'].nunique()
+
+            # 3. Diseño de Métricas y Semáforo
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Tarjetas", total_t)
+            m1.metric("Total Tarjetas", len(df_actual), f"{df_actual['Sitio'].nunique()} Sitios")
             
             with m2:
                 st.markdown(f"""<div style="background-color:#fee2e2; border:1px solid #dc2626; padding:15px; border-radius:10px; text-align:center;">
                     <h4 style="color:#991b1b; margin:0;">CRÍTICO</h4>
-                    <h1 style="color:#dc2626; margin:0;">{criticas}</h1>
+                    <h1 style="color:#dc2626; margin:0; line-height:1;">{len(criticas_df)}</h1>
+                    <small style="color:#991b1b;">Tarjetas en <b>{sitios_criticos}</b> sitios</small>
                 </div>""", unsafe_allow_html=True)
-                if criticas > 0:
-                    if st.button("Ver Detalle Alertas ➔", key="btn_ir_alertas"):
+                if len(criticas_df) > 0:
+                    st.write("") # Espaciador
+                    if st.button("Ver Detalle Alertas ➔", key="btn_ir_alertas_new"):
                         cambiar_tab("🚨 ALERTAS ACTUALES")
 
             with m3:
                 st.markdown(f"""<div style="background-color:#fef9c3; border:1px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;">
                     <h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4>
-                    <h1 style="color:#ca8a04; margin:0;">{prev}</h1>
+                    <h1 style="color:#ca8a04; margin:0; line-height:1;">{len(prev_df)}</h1>
+                    <small style="color:#854d0e;">Tarjetas en <b>{sitios_prev}</b> sitios</small>
                 </div>""", unsafe_allow_html=True)
 
             with m4:
                 st.markdown(f"""<div style="background-color:#dcfce7; border:1px solid #16a34a; padding:15px; border-radius:10px; text-align:center;">
                     <h4 style="color:#166534; margin:0;">OPTIMO</h4>
-                    <h1 style="color:#16a34a; margin:0;">{ok}</h1>
+                    <h1 style="color:#16a34a; margin:0; line-height:1;">{len(ok_df)}</h1>
+                    <small style="color:#166534;">Tarjetas en <b>{sitios_ok}</b> sitios</small>
                 </div>""", unsafe_allow_html=True)
 
             # Gráfico de Torta
-            df_pie = pd.DataFrame({"Estado": ["Crítico", "Preventivo", "Normal"], "Cant": [criticas, prev, ok]})
+            df_pie = pd.DataFrame({
+                "Estado": ["Crítico", "Preventivo", "Normal"], 
+                "Cant": [len(criticas_df), len(prev_df), len(ok_df)]
+            })
             fig_pie = px.pie(df_pie, values='Cant', names='Estado', hole=0.5,
-                           color='Estado', color_discrete_map={'Crítico':'#dc2626', 'Preventivo':'#facc15', 'Normal':'#22c55e'})
+                           color='Estado', color_discrete_map={'Crítico':'#dc2626', 'Preventivo':'#facc15', 'Normal':'#22c55e'},
+                           title="Distribución de Carga Térmica")
             st.plotly_chart(fig_pie, use_container_width=True)
 
     # --- PESTAÑA 1: ALERTAS ---
