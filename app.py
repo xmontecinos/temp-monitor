@@ -131,12 +131,10 @@ if archivos_lista:
             st.divider()
 
             # 3. Análisis de Slots (Top 10)
-            st.subheader("🔝 Top 10 Slots con Mayor Incidencia Crítica")
+            st.subheader("🔝 Top Slots con Alta Temperatura")
             
             if not criticas_df.empty:
-                col_chart, col_table = st.columns([1.5, 1])
-                
-                # Agrupamos por SLOT para ver cuál es el que más falla a nivel nacional
+                # Agrupamos por SLOT para el Top 10
                 resumen_slots = (
                     criticas_df.groupby('Slot')
                     .size()
@@ -145,35 +143,61 @@ if archivos_lista:
                     .head(10)
                 )
                 
-                # Convertimos Slot a String para que el gráfico no lo trate como número continuo
                 resumen_slots['Slot_Label'] = "Slot " + resumen_slots['Slot'].astype(str)
 
-                with col_chart:
-                    fig_bar = px.bar(
-                        resumen_slots, 
-                        x='Slot_Label', 
-                        y='Cantidad_Criticas',
-                        text='Cantidad_Criticas',
-                        color='Cantidad_Criticas',
-                        color_continuous_scale='Reds',
-                        labels={'Slot_Label': 'Número de Slot', 'Cantidad_Criticas': 'Tarjetas Críticas'},
-                        title="Ranking de Falla por Slot"
-                    )
-                    fig_bar.update_traces(textposition='outside')
-                    st.plotly_chart(fig_bar, use_container_width=True)
+                # --- FILA SUPERIOR: GRÁFICO ---
+                fig_bar = px.bar(
+                    resumen_slots, 
+                    x='Slot_Label', 
+                    y='Cantidad_Criticas',
+                    text='Cantidad_Criticas',
+                    color='Cantidad_Criticas',
+                    color_continuous_scale='Reds',
+                    title="Distribución de Fallas por Slot (Red Completa)"
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-                with col_table:
-                    st.write("### Detalle Numérico")
-                    # Renombrar para mayor claridad en la tabla
-                    tabla_format = resumen_slots[['Slot_Label', 'Cantidad_Criticas']].rename(
-                        columns={'Slot_Label': 'Ubicación Física', 'Cantidad_Criticas': 'Tarjetas en Rojo'}
+                # --- FILA INFERIOR: DETALLE POR SELECCIÓN ---
+                st.divider()
+                st.subheader("🔍 Detalle de Sitios por Slot")
+                
+                # Selector para elegir qué Slot del Top 10 queremos investigar
+                slot_investigar = st.selectbox(
+                    "Seleccione un Slot para ver los sitios afectados:",
+                    options=resumen_slots['Slot'].tolist(),
+                    format_func=lambda x: f"Slot {x}"
+                )
+
+                if slot_investigar:
+                    # Filtramos las tarjetas críticas que coinciden con ese Slot
+                    sitios_afectados = (
+                        criticas_df[criticas_df['Slot'] == slot_investigar]
+                        .groupby('Sitio')
+                        .agg({'Temp': 'max'}) # Mostramos la temperatura máxima alcanzada en ese sitio
+                        .reset_index()
+                        .rename(columns={'Temp': 'Temp Máx (°C)'})
+                        .sort_values(by='Temp Máx (°C)', ascending=False)
                     )
-                    st.table(tabla_format)
+
+                    col_t1, col_t2 = st.columns([1, 2])
                     
-                    max_slot = resumen_slots.iloc[0]['Slot']
-                    st.error(f"🚨 Atención: El **Slot {max_slot}** es el punto más vulnerable de la red actualmente.")
+                    with col_t1:
+                        st.metric(f"Sitios con Slot {slot_investigar} en Rojo", len(sitios_afectados))
+                        st.dataframe(sitios_afectados, hide_index=True, use_container_width=True)
+                    
+                    with col_t2:
+                        # Un pequeño gráfico de los sitios más calientes para ese Slot
+                        fig_sitios = px.bar(
+                            sitios_afectados.head(15), # Top 15 sitios para no saturar
+                            x='Sitio', 
+                            y='Temp Máx (°C)',
+                            color='Temp Máx (°C)',
+                            color_continuous_scale='OrRd',
+                            title=f"Top 15 Sitios con mayor temperatura en Slot {slot_investigar}"
+                        )
+                        st.plotly_chart(fig_sitios, use_container_width=True)
             else:
-                st.success("✅ Excelente: No hay tarjetas críticas para generar un ranking de fallas.")
+                st.success("✅ No hay datos críticos para analizar.")
 
     # --- PESTAÑA 1: ALERTAS ---
     with tab_alertas:
