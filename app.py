@@ -66,7 +66,7 @@ if archivos_lista:
         st.session_state["df_now"] = pd.DataFrame(extraer_datos_masivo(archivos_lista[0]))
     
     df_actual = st.session_state["df_now"]
-    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO 100H"])
+    tab1, tab2, tab3 = st.tabs(["🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"])
 
     with tab1:
         if not df_actual.empty:
@@ -93,7 +93,7 @@ if archivos_lista:
 
     with tab3:
         st.subheader(f"Tendencia (Disponibles: {len(archivos_lista)} reportes)")
-        num_reportes = st.slider("Reportes a procesar:", 10, min(200, len(archivos_lista)), 100)
+        num_reportes = st.slider("Reportes a procesar:", 10, min(180, len(archivos_lista)), 100)
         
         if st.button(f"📊 Cargar {num_reportes} Horas"):
             all_data = []
