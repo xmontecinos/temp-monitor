@@ -8,11 +8,11 @@ import gc
 # 1. Configuración de página
 st.set_page_config(page_title="Monitor Red", layout="wide")
 
-# UMBRALES DEFINIDOS
+# UMBRALES DEFINIDOS (Sincronizados con tus últimas actualizaciones)
 UMBRAL_CRITICO = 78 
 UMBRAL_PREVENTIVO = 60
 FOLDER_PATH = 'Temperatura'
-PARQUET_FILE = 'base_historica.parquet'  # Nombre del archivo optimizado
+PARQUET_FILE = 'base_historica.parquet'
 
 # --- FUNCIONES DE EXTRACCIÓN ---
 def extraer_datos_masivo(path):
@@ -20,15 +20,18 @@ def extraer_datos_masivo(path):
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
+            # Búsqueda de Timestamp
             ts_match = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', content)
             if not ts_match: return []
             ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
             
+            # Separación por NE Name (Consistente con NEName para scripts)
             bloques = re.split(r'NE Name\s*:\s*', content)
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
                 nombre_sitio = lineas[0].strip().split()[0]
+                # Regex para capturar Cabinet, Slot y Temperatura
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
                 for r in filas:
                     rows.append({
@@ -45,6 +48,7 @@ def extraer_datos_masivo(path):
 def listar_archivos(folder):
     if not os.path.exists(folder): return []
     fs = [os.path.join(folder, f) for f in os.listdir(folder) if ".txt" in f]
+    # Ordenar archivos por fecha implícita en el nombre
     fs.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
     return fs
 
@@ -76,8 +80,9 @@ if archivos_lista:
             
             c_info1, c_info2 = st.columns(2)
             c_info1.info(f"🕒 **Último reporte:** {ultima_hora}")
-            c_info2.info(f"📍 **Sitios únicos:** {total_sitios_red}")
+            c_info2.info(f"📍 **Sitios únicos procesados:** {total_sitios_red}")
 
+            # Lógica de Semáforos
             df_sitios_max = df_actual.groupby('Sitio')['Temp'].max().reset_index()
             s_crit = df_sitios_max[df_sitios_max['Temp'] >= UMBRAL_CRITICO]
             s_prev = df_sitios_max[(df_sitios_max['Temp'] >= UMBRAL_PREVENTIVO) & (df_sitios_max['Temp'] < UMBRAL_CRITICO)]
@@ -97,39 +102,60 @@ if archivos_lista:
             with m4:
                 st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><p style="color:#16a34a; margin:0; font-weight:bold;">< {UMBRAL_PREVENTIVO}°C</p><h1 style="color:#16a34a; margin:5px 0;">{len(t_ok)}</h1><small style="color:#166534;">En <b>{len(s_ok)}</b> sitios</small></div>', unsafe_allow_html=True)
 
-           st.divider()
+            st.divider()
+            
+            # --- CORRECCIÓN: Ranking de Slots ---
             if not t_crit.empty:
-                st.subheader("🔝 Top 10 Slots con Alerta Crítica")
-                
-                # Aseguramos que 'Slot' sea tratado como categoría/texto para el gráfico
-                # Agrupamos y contamos cuántas veces cada slot presenta temperaturas críticas
+                st.subheader("🔝 Top 10 Slots con Alertas Críticas")
+                # Agrupamos por Slot y contamos ocurrencias
                 res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant')
                 res_slots = res_slots.sort_values('Cant', ascending=False).head(10)
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-
-                fig_slots = px.bar(
+                
+                fig_bar = px.bar(
                     res_slots, 
                     x='Slot_Label', 
                     y='Cant', 
-                    text='Cant',
-                    labels={'Slot_Label': 'Número de Slot', 'Cant': 'Total de Alertas'},
+                    text='Cant', 
                     color='Cant', 
-                    color_continuous_scale='Reds'
+                    color_continuous_scale='Reds',
+                    labels={'Slot_Label': 'Ubicación del Slot', 'Cant': 'Cantidad de Alertas'}
                 )
-                
-                fig_slots.update_traces(textposition='outside')
-                st.plotly_chart(fig_slots, use_container_width=True)
+                fig_bar.update_traces(textposition='outside')
+                st.plotly_chart(fig_bar, use_container_width=True)
             else:
-                st.success("✅ No hay slots en estado crítico para mostrar en el ranking.")
+                st.success("✅ No hay tarjetas por encima del umbral crítico en este momento.")
 
-    # --- PESTAÑA 3: HISTÓRICO (OPTIMIZADA CON PARQUET) ---
+    # --- PESTAÑA: ALERTAS ACTUALES ---
+    with tab_alertas:
+        crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
+        if not crit_all.empty:
+            st.warning(f"Se detectaron {len(crit_all)} tarjetas en estado crítico.")
+            cols = st.columns(4)
+            for i, (_, r) in enumerate(crit_all.sort_values('Temp', ascending=False).iterrows()):
+                with cols[i % 4]:
+                    st.markdown(f'''
+                        <div style="background-color:#fee2e2; border:1px solid #dc2626; padding:10px; border-radius:8px; margin-bottom:10px; text-align:center;">
+                            <strong style="color:#991b1b;">{r["Sitio"]}</strong><br>
+                            <span style="font-size:24px; font-weight:bold; color:#dc2626;">{r["Temp"]}°C</span><br>
+                            <small>Slot: {r["Slot"]}</small>
+                        </div>
+                    ''', unsafe_allow_html=True)
+        else: 
+            st.success("✅ Todos los sitios operan bajo temperaturas seguras.")
+
+    # --- PESTAÑA: BUSCADOR ---
+    with tab_busq:
+        sitio_busq = st.selectbox("Seleccionar Sitio para inspección:", sorted(df_actual['Sitio'].unique()))
+        df_res = df_actual[df_actual['Sitio'] == sitio_busq]
+        st.dataframe(df_res.style.background_gradient(subset=['Temp'], cmap='YlOrRd'), use_container_width=True)
+
+    # --- PESTAÑA: HISTÓRICO (PARQUET) ---
     with tab_hist:
         st.subheader("📈 Gestión de Base de Datos Histórica")
-        
         c1, c2 = st.columns(2)
         with c1:
             st.write("### 1. Procesar Archivos TXT")
-            # Slider que permite seleccionar TODOS los archivos por defecto
             num_reportes = st.slider("Archivos a incluir:", 1, len(archivos_lista), len(archivos_lista))
             if st.button("🔥 Generar/Actualizar Parquet"):
                 all_dfs = []
@@ -139,31 +165,31 @@ if archivos_lista:
                     p_text.text(f"Procesando ({i+1}/{num_reportes}): {os.path.basename(p)}")
                     data = extraer_datos_masivo(p)
                     if data:
-                        # Agregación inmediata para no colapsar la RAM
                         temp_df = pd.DataFrame(data)
+                        # Agregación para optimizar tamaño
                         temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
                         all_dfs.append(temp_df)
                     p_bar.progress((i + 1) / num_reportes)
-                    if i % 20 == 0: gc.collect() # Limpiar memoria
+                    if i % 20 == 0: gc.collect()
                 
                 if all_dfs:
                     df_final = pd.concat(all_dfs, ignore_index=True)
                     df_final.to_parquet(PARQUET_FILE, index=False)
                     st.session_state["df_full"] = df_final
-                    p_text.success(f"✅ ¡Base de datos Parquet creada con {num_reportes} reportes!")
+                    p_text.success(f"✅ ¡Base Parquet creada con {num_reportes} reportes!")
         
         with c2:
             st.write("### 2. Cargar o Limpiar")
             if st.button("📂 Cargar desde Parquet"):
                 if os.path.exists(PARQUET_FILE):
                     st.session_state["df_full"] = pd.read_parquet(PARQUET_FILE)
-                    st.success("✅ Datos cargados instantáneamente.")
-                else: st.error("No existe el archivo Parquet.")
+                    st.success("✅ Datos cargados correctamente.")
+                else: st.error("No se encontró el archivo base_historica.parquet.")
             
             if st.button("🗑️ Eliminar Parquet"):
                 if os.path.exists(PARQUET_FILE):
                     os.remove(PARQUET_FILE)
-                    st.warning("Archivo eliminado.")
+                    st.warning("Archivo eliminado físicamente.")
 
         if "df_full" in st.session_state:
             st.divider()
@@ -171,22 +197,10 @@ if archivos_lista:
             sitio_sel = st.selectbox("Sitio Histórico:", sorted(df_p['Sitio'].unique()))
             df_s = df_p[df_p['Sitio'] == sitio_sel]
             ids = sorted(df_s['ID_Full'].unique())
-            sel = st.multiselect("Filtrar por Slot:", ids, default=ids)
+            sel = st.multiselect("Filtrar por Slot (ID Full):", ids, default=ids)
             if sel:
-                st.plotly_chart(px.line(df_s[df_s['ID_Full'].isin(sel)], x='Timestamp', y='Temp', color='ID_Full', markers=True), use_container_width=True)
-
-    # --- PESTAÑAS ALERTAS Y BUSCADOR (Igual a tu código) ---
-    with tab_alertas:
-        crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
-        if not crit_all.empty:
-            cols = st.columns(4)
-            for i, (_, r) in enumerate(crit_all.sort_values('Temp', ascending=False).iterrows()):
-                with cols[i % 4]:
-                    st.markdown(f'<div style="background-color:#fee2e2; border:1px solid #dc2626; padding:10px; border-radius:8px; margin-bottom:10px; text-align:center;"><strong style="color:#991b1b;">{r["Sitio"]}</strong><br><span style="font-size:24px; font-weight:bold; color:#dc2626;">{r["Temp"]}°C</span><br><small>Slot: {r["Slot"]}</small></div>', unsafe_allow_html=True)
-        else: st.success("✅ Red estable.")
-
-    with tab_busq:
-        sitio_busq = st.selectbox("Seleccionar Sitio:", sorted(df_actual['Sitio'].unique()))
-        st.dataframe(df_actual[df_actual['Sitio'] == sitio_busq], use_container_width=True)
+                fig_hist = px.line(df_s[df_s['ID_Full'].isin(sel)], x='Timestamp', y='Temp', color='ID_Full', markers=True)
+                fig_hist.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="Límite Crítico")
+                st.plotly_chart(fig_hist, use_container_width=True)
 else:
-    st.error("No hay archivos en 'Temperatura'.")
+    st.error("No se encontraron archivos .txt en la carpeta 'Temperatura'. Verifica la ruta.")
