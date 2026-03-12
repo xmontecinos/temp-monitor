@@ -14,6 +14,7 @@ UMBRAL_PREVENTIVO = 60
 FOLDER_PATH = 'Temperatura'
 PARQUET_FILE = 'base_historica.parquet'
 
+# --- FUNCIONES DE EXTRACCIÓN ---
 def extraer_datos_masivo(path):
     rows = []
     try:
@@ -43,6 +44,7 @@ def listar_archivos(folder):
     fs.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
     return fs
 
+# --- PROCESAMIENTO INICIAL ---
 archivos_lista = listar_archivos(FOLDER_PATH)
 
 if archivos_lista:
@@ -55,36 +57,68 @@ if archivos_lista:
     with tab_dash:
         if not df_actual.empty:
             st.title("📊 Monitor de Salud de Red")
+            
+            # Cintillo de información (como en tu imagen)
             c_info1, c_info2 = st.columns(2)
-            c_info1.info(f"🕒 Reporte: {df_actual['Timestamp'].max()}")
-            c_info2.info(f"📍 Sitios: {df_actual['Sitio'].nunique()}")
+            c_info1.info(f"🕒 **Último reporte:** {df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')}")
+            c_info2.info(f"📍 **Sitios procesados:** {df_actual['Sitio'].nunique()}")
 
-            # Métricas de Semáforo
+            # --- LÓGICA DE CONTEO (RESTAURADA) ---
             df_s_max = df_actual.groupby('Sitio')['Temp'].max().reset_index()
+            
+            # Clasificación de sitios
+            s_crit = df_s_max[df_s_max['Temp'] >= UMBRAL_CRITICO]
+            s_prev = df_s_max[(df_s_max['Temp'] >= UMBRAL_PREVENTIVO) & (df_s_max['Temp'] < UMBRAL_CRITICO)]
+            s_ok = df_s_max[df_s_max['Temp'] < UMBRAL_PREVENTIVO]
+
+            # Clasificación de tarjetas individuales
             t_crit = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
             t_prev = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
             t_ok = df_actual[df_actual['Temp'] < UMBRAL_PREVENTIVO]
 
+            # --- SEMÁFORO VISUAL (RESTAURADO) ---
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Tarjetas", f"{len(df_actual):,}")
-            with m2: st.markdown(f'<div style="background-color:#fee2e2; border:2px solid #dc2626; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#991b1b; margin:0;">CRÍTICO</h4><h1>{len(t_crit)}</h1></div>', unsafe_allow_html=True)
-            with m3: st.markdown(f'<div style="background-color:#fef9c3; border:2px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4><h1>{len(t_prev)}</h1></div>', unsafe_allow_html=True)
-            with m4: st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><h1>{len(t_ok)}</h1></div>', unsafe_allow_html=True)
+            
+            with m2:
+                st.markdown(f'''<div style="background-color:#fee2e2; border:2px solid #dc2626; padding:15px; border-radius:10px; text-align:center;">
+                    <h4 style="color:#991b1b; margin:0;">CRÍTICO</h4>
+                    <h1 style="color:#dc2626; margin:10px 0;">{len(t_crit)}</h1>
+                    <p style="color:#991b1b; margin:0; font-size:0.8em;">En {len(s_crit)} sitios</p></div>''', unsafe_allow_html=True)
+            
+            with m3:
+                st.markdown(f'''<div style="background-color:#fef9c3; border:2px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;">
+                    <h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4>
+                    <h1 style="color:#ca8a04; margin:10px 0;">{len(t_prev)}</h1>
+                    <p style="color:#854d0e; margin:0; font-size:0.8em;">En {len(s_prev)} sitios</p></div>''', unsafe_allow_html=True)
+            
+            with m4:
+                st.markdown(f'''<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;">
+                    <h4 style="color:#166534; margin:0;">ÓPTIMO</h4>
+                    <h1 style="color:#16a34a; margin:10px 0;">{len(t_ok)}</h1>
+                    <p style="color:#166534; margin:0; font-size:0.8em;">En {len(s_ok)} sitios</p></div>''', unsafe_allow_html=True)
 
+            st.divider()
+
+            # --- GRÁFICO CON DEGRADADO (RESTAURADO) ---
             if not t_crit.empty:
                 st.subheader("🔝 Top 10 Slots Críticos")
                 res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant').sort_values('Cant', ascending=False).head(10)
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-                # FIX: Color degradado restaurado
-                fig_bar = px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', color_continuous_scale='Reds', text_auto=True)
-                st.plotly_chart(fig_bar, selection_mode="ignore")
+                
+                fig_bar = px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', 
+                                 color_continuous_scale='Reds', text_auto=True)
+                # Actualizar para quitar la barra de color lateral si molesta
+                fig_bar.update_layout(coloraxis_showscale=False)
+                st.plotly_chart(fig_bar, use_container_width=True)
 
+    # --- PESTAÑA HISTÓRICO (CON MEJORA VISUAL) ---
     with tab_hist:
-        st.subheader("📈 Tendencia Histórica")
+        st.subheader("📈 Gestión de Histórico")
         c1, c2 = st.columns(2)
         with c1:
-            num = st.slider("TXTs a procesar:", 1, len(archivos_lista), len(archivos_lista))
-            if st.button("🔥 Actualizar Parquet"):
+            num = st.slider("Archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
+            if st.button("🔥 Generar Parquet"):
                 all_dfs = []
                 bar = st.progress(0)
                 for i, p in enumerate(archivos_lista[:num]):
@@ -95,35 +129,39 @@ if archivos_lista:
                         all_dfs.append(df_tmp)
                     bar.progress((i + 1) / num)
                 pd.concat(all_dfs).to_parquet(PARQUET_FILE, index=False)
-                st.success("¡Base Parquet lista!")
+                st.success("¡Base Parquet creada!")
         
         with c2:
-            if st.button("📂 Cargar Parquet"):
+            if st.button("📂 Cargar desde Parquet"):
                 if os.path.exists(PARQUET_FILE):
                     st.session_state["df_full"] = pd.read_parquet(PARQUET_FILE)
-                    st.toast("Datos cargados", icon="✅")
+                    st.toast("Cargado correctamente")
 
         if "df_full" in st.session_state:
+            st.divider()
             df_p = st.session_state["df_full"]
             s_sel = st.selectbox("Sitio:", sorted(df_p['Sitio'].unique()))
             df_s = df_p[df_p['Sitio'] == s_sel]
             ids = sorted(df_s['ID_Full'].unique())
-            sel = st.multiselect("Slots:", ids, default=ids[:3]) # Limitamos a 3 por defecto para que no se sature
+            sel = st.multiselect("Filtrar Slots:", ids, default=ids[:5])
             
             if sel:
-                # FIX: Mejora visual de la gráfica lineal
+                # Gráfica lineal mejorada para que no sea solo una mancha
                 fig_l = px.line(df_s[df_s['ID_Full'].isin(sel)], 
                                 x='Timestamp', y='Temp', color='ID_Full',
-                                markers=True, # Agrega puntos para ver cada reporte
-                                render_mode="svg") # Hace que las líneas se vean más nítidas
+                                markers=True, title=f"Evolución de Temperatura - {s_sel}")
                 fig_l.update_layout(hovermode="x unified")
-                st.plotly_chart(fig_l)
+                st.plotly_chart(fig_l, use_container_width=True)
 
-    # ... (Resto de pestañas Alertas y Buscador se mantienen igual)
+    # Mantener Alertas y Buscador simples
     with tab_alertas:
-        st.dataframe(df_actual[df_actual['Temp'] >= UMBRAL_CRITICO])
+        st.subheader("🚨 Detalle de Alertas")
+        st.dataframe(df_actual[df_actual['Temp'] >= UMBRAL_CRITICO], use_container_width=True)
+    
     with tab_busq:
-        st.dataframe(df_actual[df_actual['Sitio'] == st.selectbox("Busca Sitio:", sorted(df_actual['Sitio'].unique()))])
+        st.subheader("🔍 Buscador")
+        sitio_b = st.selectbox("Seleccione Sitio:", sorted(df_actual['Sitio'].unique()))
+        st.dataframe(df_actual[df_actual['Sitio'] == sitio_b], use_container_width=True)
 
 else:
-    st.error("No hay archivos.")
+    st.error("No se encontraron archivos en la carpeta 'Temperatura'.")
