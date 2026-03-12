@@ -1,5 +1,5 @@
+streamlit==1.31.0
 pandas
-streamlit
 plotly
-matplotlib
 pyarrow
+altair==5.2.0
