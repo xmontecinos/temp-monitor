@@ -1,5 +1,5 @@
-streamlit==1.31.0
+streamlit
 pandas
 plotly
 pyarrow
-altair==5.2.0
+fastparquet
