@@ -97,12 +97,30 @@ if archivos_lista:
             with m4:
                 st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><p style="color:#16a34a; margin:0; font-weight:bold;">< {UMBRAL_PREVENTIVO}°C</p><h1 style="color:#16a34a; margin:5px 0;">{len(t_ok)}</h1><small style="color:#166534;">En <b>{len(s_ok)}</b> sitios</small></div>', unsafe_allow_html=True)
 
-            st.divider()
+           st.divider()
             if not t_crit.empty:
-                st.subheader("🔝 Top 10 Slots Críticos")
-                res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant').sort_values('Cant', ascending=False).head(10)
+                st.subheader("🔝 Top 10 Slots con Alerta Crítica")
+                
+                # Aseguramos que 'Slot' sea tratado como categoría/texto para el gráfico
+                # Agrupamos y contamos cuántas veces cada slot presenta temperaturas críticas
+                res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant')
+                res_slots = res_slots.sort_values('Cant', ascending=False).head(10)
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cant', text='Cant', color='Cant', color_continuous_scale='Reds'), use_container_width=True)
+
+                fig_slots = px.bar(
+                    res_slots, 
+                    x='Slot_Label', 
+                    y='Cant', 
+                    text='Cant',
+                    labels={'Slot_Label': 'Número de Slot', 'Cant': 'Total de Alertas'},
+                    color='Cant', 
+                    color_continuous_scale='Reds'
+                )
+                
+                fig_slots.update_traces(textposition='outside')
+                st.plotly_chart(fig_slots, use_container_width=True)
+            else:
+                st.success("✅ No hay slots en estado crítico para mostrar en el ranking.")
 
     # --- PESTAÑA 3: HISTÓRICO (OPTIMIZADA CON PARQUET) ---
     with tab_hist:
