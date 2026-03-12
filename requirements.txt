@@ -3,3 +3,4 @@ pandas
 plotly
 pyarrow
 fastparquet
+xlsxwriter
