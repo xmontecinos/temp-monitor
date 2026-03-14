@@ -13,3 +13,4 @@ while($true) {
     # 4. Espera 300 segundos (5 minutos)
     Start-Sleep -Seconds 300
 }
+# Actualización automática
