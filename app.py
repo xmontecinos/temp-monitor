@@ -9,7 +9,7 @@ from io import BytesIO
 # 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(page_title="Monitor Red - Huawei", layout="wide")
 
-# UMBRALES (Según tus preferencias actuales)
+# UMBRALES
 UMBRAL_CRITICO = 78 
 UMBRAL_PREVENTIVO = 65
 FOLDER_PATH = 'Temperatura'
@@ -56,7 +56,7 @@ def listar_archivos(folder):
 def to_excel(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Alertas')
+        df.to_excel(writer, index=False, sheet_name='Datos')
     return output.getvalue()
 
 # --- PROCESAMIENTO INICIAL ---
@@ -80,12 +80,10 @@ if archivos_lista:
             
             st.title("📊 Monitor de Salud de Red")
             
-            # Info del Reporte Actual
             c_info1, c_info2 = st.columns(2)
             c_info1.info(f"🕒 **Horario del Reporte:** {ultima_hora}")
             c_info2.success(f"📍 **Sitios Registrados en este Reporte:** {total_sitios_red}")
 
-            # Lógica de Estados
             df_sitios_max = df_actual.groupby('Sitio')['Temp'].max().reset_index()
             s_crit = df_sitios_max[df_sitios_max['Temp'] >= UMBRAL_CRITICO]
             s_prev = df_sitios_max[(df_sitios_max['Temp'] >= UMBRAL_PREVENTIVO) & (df_sitios_max['Temp'] < UMBRAL_CRITICO)]
@@ -94,7 +92,6 @@ if archivos_lista:
             t_prev = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
             t_ok = df_actual[df_actual['Temp'] < UMBRAL_PREVENTIVO]
 
-            # Semáforos HTML
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Tarjetas", f"{len(df_actual):,}")
             with m2:
@@ -116,7 +113,6 @@ if archivos_lista:
                 slot_foco = st.selectbox("Selecciona un Slot para ver sitios afectados:", sorted(t_crit['Slot'].unique()))
                 df_foco = t_crit[t_crit['Slot'] == slot_foco][['Sitio', 'Temp', 'ID_Full']].sort_values('Temp', ascending=False)
                 
-                # Botón de Descarga Excel
                 df_xlsx = to_excel(df_foco)
                 st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
                 st.dataframe(df_foco, use_container_width=True, hide_index=True)
@@ -125,11 +121,12 @@ if archivos_lista:
     with tab_hist:
         st.subheader("📈 Gestión Histórica (Parquet)")
         c1, c2 = st.columns(2)
+        
         with c1:
             num_reportes = st.slider("Archivos a incluir:", 1, len(archivos_lista), min(50, len(archivos_lista)))
             if st.button("🔥 Generar/Actualizar Base Parquet"):
                 all_dfs = []
-                progreso_bar = st.progress(0) #
+                progreso_bar = st.progress(0)
                 texto_estado = st.empty()
                 
                 for i, p in enumerate(archivos_lista[:num_reportes]):
@@ -147,14 +144,29 @@ if archivos_lista:
                     df_final = pd.concat(all_dfs, ignore_index=True)
                     df_final.to_parquet(PARQUET_FILE, index=False)
                     st.session_state["df_full"] = df_final
-                    texto_estado.success(f"✅ ¡Base Parquet lista!")
+                    texto_estado.success(f"✅ ¡Base Parquet lista con {len(df_final)} registros!")
 
         with c2:
             if st.button("📂 Cargar desde Parquet"):
                 if os.path.exists(PARQUET_FILE):
                     st.session_state["df_full"] = pd.read_parquet(PARQUET_FILE)
-                    st.success("✅ Datos cargados.")
-                else: st.error("No existe el archivo Parquet.")
+                    st.success(f"✅ Datos cargados: {len(st.session_state['df_full'])} filas.")
+                else: 
+                    st.error("No existe el archivo Parquet. Genéralo primero.")
+            
+            # BOTÓN DE DESCARGA DE TODA LA BASE
+            if "df_full" in st.session_state:
+                st.write("---")
+                st.write("📥 **Exportar Histórico Completo**")
+                with st.spinner('Generando Excel... espere por favor.'):
+                    # Generamos el Excel de toda la base en memoria
+                    full_excel = to_excel(st.session_state["df_full"])
+                    st.download_button(
+                        label="🚀 Descargar Base Completa a Excel",
+                        data=full_excel,
+                        file_name="reporte_historico_total.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
 
         if "df_full" in st.session_state:
             st.divider()
