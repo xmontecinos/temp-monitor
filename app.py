@@ -153,20 +153,6 @@ if archivos_lista:
                     st.success(f"✅ Datos cargados: {len(st.session_state['df_full'])} filas.")
                 else: 
                     st.error("No existe el archivo Parquet. Genéralo primero.")
-            
-            # BOTÓN DE DESCARGA DE TODA LA BASE
-            if "df_full" in st.session_state:
-                st.write("---")
-                st.write("📥 **Exportar Histórico Completo**")
-                with st.spinner('Generando Excel... espere por favor.'):
-                    # Generamos el Excel de toda la base en memoria
-                    full_excel = to_excel(st.session_state["df_full"])
-                    st.download_button(
-                        label="🚀 Descargar Base Completa a Excel",
-                        data=full_excel,
-                        file_name="reporte_historico_total.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
 
         if "df_full" in st.session_state:
             st.divider()
