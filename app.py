@@ -15,7 +15,7 @@ UMBRAL_PREVENTIVO = 65
 FOLDER_PATH = 'Temperatura'
 PARQUET_FILE = 'base_historica.parquet'
 
-# --- FUNCIONES DE EXTRACCIÓN ---
+# --- FUNCIONES DE EXTRACCIÓN Y CONVERSIÓN ---
 def extraer_datos_masivo(path):
     rows = []
     try:
@@ -25,7 +25,6 @@ def extraer_datos_masivo(path):
             if not ts_match: return []
             ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
             
-            # Ajuste de consistencia: NE Name -> NEName
             bloques = re.split(r'NE Name\s*:\s*', content)
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
@@ -58,6 +57,10 @@ def to_excel(df):
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Datos')
     return output.getvalue()
+
+def to_csv(df):
+    # Función para manejar bases de datos masivas que Excel no soporta
+    return df.to_csv(index=False).encode('utf-8')
 
 # --- PROCESAMIENTO INICIAL ---
 archivos_lista = listar_archivos(FOLDER_PATH)
@@ -144,28 +147,32 @@ if archivos_lista:
                     df_final = pd.concat(all_dfs, ignore_index=True)
                     df_final.to_parquet(PARQUET_FILE, index=False)
                     st.session_state["df_full"] = df_final
-                    texto_estado.success(f"✅ ¡Base Parquet lista con {len(df_final)} registros!")
+                    texto_estado.success(f"✅ ¡Base Parquet lista con {len(df_final):,} registros!")
 
         with c2:
             if st.button("📂 Cargar desde Parquet"):
                 if os.path.exists(PARQUET_FILE):
                     st.session_state["df_full"] = pd.read_parquet(PARQUET_FILE)
-                    st.success(f"✅ Datos cargados: {len(st.session_state['df_full'])} filas.")
+                    st.success(f"✅ Datos cargados: {len(st.session_state['df_full']):,} filas.")
                 else: 
                     st.error("No existe el archivo Parquet. Genéralo primero.")
             
-            # BOTÓN DE DESCARGA DE TODA LA BASE
+            # EXPORTACIÓN MASIVA (CSV)
             if "df_full" in st.session_state:
                 st.write("---")
                 st.write("📥 **Exportar Histórico Completo**")
-                with st.spinner('Generando Excel... espere por favor.'):
-                    # Generamos el Excel de toda la base en memoria
-                    full_excel = to_excel(st.session_state["df_full"])
+                n_filas = len(st.session_state["df_full"])
+                
+                if n_filas > 1000000:
+                    st.warning(f"La base tiene {n_filas:,} registros. Se descargará en CSV por exceso de capacidad de Excel.")
+                
+                with st.spinner('Generando archivo CSV...'):
+                    csv_data = to_csv(st.session_state["df_full"])
                     st.download_button(
-                        label="🚀 Descargar Base Completa a Excel",
-                        data=full_excel,
-                        file_name="reporte_historico_total.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        label="🚀 Descargar Base Completa (CSV)",
+                        data=csv_data,
+                        file_name="historico_temperaturas_red.csv",
+                        mime="text/csv"
                     )
 
         if "df_full" in st.session_state:
