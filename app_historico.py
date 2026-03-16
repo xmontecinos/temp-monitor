@@ -5,121 +5,109 @@ import re
 import plotly.express as px
 import gc
 
-# --- CONFIGURACIÓN DE PÁGINA ---
-st.set_page_config(page_title="Histórico Global de Red", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Histórico Global de Red por Hardware", layout="wide")
 
-# Ruta absoluta basada en tus capturas
+# Rutas basadas en tus capturas de pantalla
 FOLDER_PATH = r'D:\Temperaturas\temperaturas\temp-monitor\Temperatura\temp-monitor\Temperatura'
-PARQUET_FILE = 'red_historico_hardware.parquet'
+PARQUET_FILE = 'red_historico_consolidado.parquet'
 UMBRAL_CRITICO = 78
 
-def extraer_datos_precisos(path):
+def extraer_datos_red(path):
     rows = []
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
-            
-            # 1. Extraer Timestamp (Fecha y Hora)
+            # Extraer Timestamp
             ts_match = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', content)
             if not ts_match: return []
             ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
             
-            # 2. Buscar las filas de datos. 
-            # El patrón busca líneas que tengan al menos 3 columnas numéricas.
-            # Usamos una regex que valide que la temperatura sea el tercer número.
+            # Capturar Subrack, Slot y Temperatura
             filas = re.findall(r'^\s*(\d+)\s+(\d+)\s+(\d+)', content, re.MULTILINE)
-            
             for r in filas:
-                subrack = int(r[0])
-                slot = int(r[1])
-                temp = int(r[2])
-                
-                # FILTRO CRÍTICO: 
-                # En tus archivos, si el tercer número es menor a 15, 
-                # probablemente capturó un ID y no una temperatura real.
-                if temp > 15 and slot < 30: 
+                subrack, slot, temp = r[0], r[1], int(r[2])
+                # Filtro de seguridad para evitar datos erróneos de IDs capturados como temperaturas
+                if temp > 15:
                     rows.append({
                         "Timestamp": ts, 
-                        "Hardware_ID": f"S{subrack}-L{slot}", 
+                        "Hardware_ID": f"S:{subrack}-L:{slot}", 
                         "Temp": temp
                     })
-    except Exception:
-        pass
+    except: pass
     return rows
 
 # --- INTERFAZ ---
-st.title("🌐 Histórico de Red por Subrack y Slot")
-st.markdown(f"**Análisis de Flota en:** `{FOLDER_PATH}`")
+st.title("🌐 Evolución Térmica Histórica: Red Global")
+st.info(f"Procesando datos de: {FOLDER_PATH}")
 
 with st.sidebar:
-    st.header("⚙️ Gestión de Datos")
-    if st.button("🚀 Regenerar Base de Red (Desde Cero)"):
-        # Borramos el parquet anterior para evitar datos residuales erróneos
-        if os.path.exists(PARQUET_FILE):
-            os.remove(PARQUET_FILE)
-            
+    st.header("Gestión de Base de Datos")
+    if st.button("🔥 Generar/Actualizar Base Global"):
         archivos = [os.path.join(FOLDER_PATH, f) for f in os.listdir(FOLDER_PATH) if f.endswith('.txt')]
-        
         if archivos:
             all_data = []
             bar = st.progress(0)
-            status = st.empty()
-            
             for i, arc in enumerate(archivos):
-                status.text(f"Procesando {i+1}/{len(archivos)}")
-                all_data.extend(extraer_datos_precisos(arc))
+                all_data.extend(extraer_datos_red(arc))
                 bar.progress((i + 1) / len(archivos))
             
             if all_data:
                 df_global = pd.DataFrame(all_data)
-                # Sincronización horaria para unir todos los sitios
+                # Sincronizamos por hora para unir todos los sitios en los mismos puntos temporales
                 df_global['Timestamp'] = df_global['Timestamp'].dt.floor('H')
                 df_global.to_parquet(PARQUET_FILE, index=False)
-                st.success("✅ ¡Base de datos reconstruida!")
+                st.success("✅ Base de red sincronizada.")
                 st.rerun()
-            else:
-                st.error("No se encontraron datos válidos. Verifica el contenido de los TXT.")
 
 # --- VISUALIZACIÓN ---
 if os.path.exists(PARQUET_FILE):
-    df = pd.read_parquet(PARQUET_FILE)
+    df_full = pd.read_parquet(PARQUET_FILE)
     
-    st.subheader("📈 Tendencia Térmica de la Red")
-    
-    col1, col2 = st.columns([1, 4])
-    
-    with col1:
-        metrica = st.radio("Cálculo Global:", ["Promedio de Red", "Máximo de Red"])
-        hw_ids = sorted(df['Hardware_ID'].unique(), key=lambda x: [int(c) for c in re.findall(r'\d+', x)])
-        seleccion = st.multiselect("Seleccione Hardware (S=Subrack, L=Slot):", hw_ids, default=hw_ids[:3])
-
-    with col2:
-        if seleccion:
-            # Agregamos por Hardware y Tiempo
-            if "Promedio" in metrica:
-                df_plot = df.groupby(['Timestamp', 'Hardware_ID'])['Temp'].mean().reset_index()
-            else:
-                df_plot = df.groupby(['Timestamp', 'Hardware_ID'])['Temp'].max().reset_index()
-            
-            df_plot = df_plot[df_plot['Hardware_ID'].isin(seleccion)]
-            
-            fig = px.line(
-                df_plot, x='Timestamp', y='Temp', color='Hardware_ID',
-                markers=True, title=f"Evolución de {metrica}",
-                labels={'Temp': 'Grados Celsius (°C)', 'Timestamp': 'Fecha (Sincronizada)'},
-                color_discrete_sequence=px.colors.qualitative.Safe
-            )
-            
-            fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="UMBRAL CRÍTICO")
-            fig.update_layout(hovermode="x unified", yaxis_range=[20, 90]) # Ajuste de escala para ver variaciones
-            st.plotly_chart(fig, use_container_width=True)
-
-    # --- TABLA DE RESUMEN ---
     st.divider()
-    st.subheader("📋 Resumen de Hardware de Red")
-    resumen = df[df['Hardware_ID'].isin(seleccion)].groupby('Hardware_ID')['Temp'].agg(['max', 'mean']).reset_index()
-    resumen.columns = ['Componente', 'Máximo Histórico (°C)', 'Promedio General (°C)']
-    st.dataframe(resumen.style.format(precision=1), use_container_width=True)
+    
+    # 1. Selección de Métrica Global
+    metrica = st.radio("Cálculo para la Red:", ["Promedio de Red", "Máximo de Red"], horizontal=True)
+    
+    # 2. Agrupación por Hardware y Tiempo (Promediando o Maximizando todos los sitios)
+    if "Promedio" in metrica:
+        df_plot_base = df_full.groupby(['Timestamp', 'Hardware_ID'])['Temp'].mean().reset_index()
+    else:
+        df_plot_base = df_full.groupby(['Timestamp', 'Hardware_ID'])['Temp'].max().reset_index()
 
+    # 3. Selector de Hardware (Estilo segunda imagen)
+    hw_ids = sorted(df_plot_base['Hardware_ID'].unique(), key=lambda x: [int(c) for c in re.findall(r'\d+', x)])
+    seleccion = st.multiselect("Comparar Hardware de la Red (Subrack-Slot):", 
+                               hw_ids, 
+                               default=hw_ids[:5] if len(hw_ids) > 5 else hw_ids)
+
+    if seleccion:
+        df_final = df_plot_base[df_plot_base['Hardware_ID'].isin(seleccion)]
+        
+        # 4. Gráfico idéntico a la segunda imagen
+        fig = px.line(
+            df_final, 
+            x='Timestamp', 
+            y='Temp', 
+            color='Hardware_ID',
+            title=f"Tendencia Térmica de Red ({metrica})",
+            markers=True,
+            template="plotly_white"
+        )
+        
+        fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
+        fig.update_layout(
+            hovermode="x unified", 
+            yaxis_title="Temperatura (°C)",
+            legend_title="Hardware ID"
+        )
+        
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 5. Tabla de Resumen Global
+        st.subheader("📋 Resumen de Desempeño por Componente (Toda la Red)")
+        resumen = df_final.groupby('Hardware_ID')['Temp'].agg(['max', 'mean', 'min']).reset_index()
+        resumen.columns = ['Hardware', 'Máx Global', 'Promedio Global', 'Mín Global']
+        st.dataframe(resumen.style.format(precision=1).highlight_max(subset=['Máx Global'], color='#ffcccc'), use_container_width=True)
 else:
-    st.info("👈 Presiona el botón para procesar los archivos y ver el histórico.")
+    st.warning("👈 Pulsa en 'Generar/Actualizar Base Global' para procesar los archivos de red.")
