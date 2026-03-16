@@ -5,10 +5,10 @@ import re
 import plotly.express as px
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Histórico Global por Slot", layout="wide")
+st.set_page_config(page_title="Histórico de Red por Slot", layout="wide")
 
 FOLDER_PATH = 'Temperatura'
-PARQUET_FILE = 'red_historico_slots.parquet' # Archivo compartido
+PARQUET_FILE = 'red_historico_slots.parquet'
 
 def extraer_datos_red(path):
     rows = []
@@ -19,7 +19,7 @@ def extraer_datos_red(path):
             if not ts_match: return []
             ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
             
-            # Captura de Slot y Temperatura en todo el archivo
+            # Extraemos Slot y Temperatura de todo el archivo (todos los sitios)
             filas = re.findall(r'^\s*(\d+)\s+(\d+)\s+(\d+)', content, re.MULTILINE)
             for r in filas:
                 rows.append({
@@ -31,13 +31,14 @@ def extraer_datos_red(path):
     return rows
 
 # --- INTERFAZ ---
-st.title("🌐 Histórico de Red por Slot")
-st.info("Esta aplicación analiza la tendencia térmica de cada Slot sumando todos los sitios de la carpeta.")
+st.title("🌐 Histórico Global: Comportamiento por Slot")
+st.markdown("Esta vista consolida todos los sitios para analizar si un Slot específico (ej. Slot 4) calienta más que el resto en toda la red.")
 
 # Sidebar - Procesamiento
 with st.sidebar:
     st.header("Admin de Datos")
-    if st.button("🚀 Procesar/Actualizar Red"):
+    if st.button("🚀 Actualizar Histórico de Red"):
+        # Importante: Buscamos en la carpeta 'Temperatura' que está al mismo nivel
         archivos = [os.path.join(FOLDER_PATH, f) for f in os.listdir(FOLDER_PATH) if f.endswith('.txt')]
         if archivos:
             all_data = []
@@ -47,46 +48,68 @@ with st.sidebar:
                 bar.progress((i + 1) / len(archivos))
             
             df_global = pd.DataFrame(all_data)
-            # Agrupar por hora para que el gráfico sea fluido
-            df_global['Timestamp'] = df_global['Timestamp'].dt.floor('H')
+            # Redondeamos a la hora para que los puntos de diferentes sitios coincidan
+            df_global['Timestamp'] = df_global['Timestamp'].dt.floor('h')
             df_global.to_parquet(PARQUET_FILE, index=False)
             st.success("¡Base de red actualizada!")
             st.rerun()
         else:
-            st.error("No se encontraron archivos .txt")
+            st.error(f"No se encontraron archivos en la carpeta '{FOLDER_PATH}'")
 
-# --- VISUALIZACIÓN ---
+# --- VISUALIZACIÓN DE RED ---
 if os.path.exists(PARQUET_FILE):
     df = pd.read_parquet(PARQUET_FILE)
     
-    # Selector de métrica y slots
-    col_a, col_b = st.columns([1, 3])
+    st.subheader("📈 Tendencia Temporal de la Red")
+    
+    col_a, col_b = st.columns([1, 4])
     
     with col_a:
-        metrica = st.radio("Métrica:", ["Máxima", "Promedio"])
+        metrica = st.selectbox("Calcular por:", ["Máxima Global", "Promedio Global"])
         todos_slots = sorted(df['Slot_Num'].unique())
-        selección = st.multiselect("Slots a comparar:", todos_slots, default=todos_slots[:3])
+        seleccion = st.multiselect("Comparar Slots:", todos_slots, default=todos_slots[:4])
     
     with col_b:
-        if selección:
-            # Agrupación dinámica
-            if metrica == "Máxima":
-                df_g = df.groupby(['Timestamp', 'Slot_Num'])['Temp'].max().reset_index()
+        if seleccion:
+            # Agrupamos por TIEMPO y SLOT (esto elimina la distinción por sitio)
+            if "Máxima" in metrica:
+                df_resumen = df.groupby(['Timestamp', 'Slot_Num'])['Temp'].max().reset_index()
             else:
-                df_g = df.groupby(['Timestamp', 'Slot_Num'])['Temp'].mean().reset_index()
+                df_resumen = df.groupby(['Timestamp', 'Slot_Num'])['Temp'].mean().reset_index()
             
-            df_plot = df_g[df_g['Slot_Num'].isin(selección)]
+            # Filtrar solo slots seleccionados
+            df_plot = df_resumen[df_resumen['Slot_Num'].isin(seleccion)].copy()
             df_plot['Slot'] = df_plot['Slot_Num'].apply(lambda x: f"Slot {x}")
 
-            fig = px.line(df_plot, x='Timestamp', y='Temp', color='Slot',
-                         title=f"Tendencia de Temperatura {metrica} en la Red",
-                         template="seaborn")
+            fig = px.line(
+                df_plot, 
+                x='Timestamp', 
+                y='Temp', 
+                color='Slot',
+                title=f"Evolución de Temperatura ({metrica}) en toda la Red",
+                labels={'Temp': 'Temperatura °C', 'Timestamp': 'Fecha y Hora'},
+                markers=True
+            )
+            
+            fig.update_layout(hovermode="x unified")
             st.plotly_chart(fig, use_container_width=True)
             
     st.divider()
-    st.subheader("🔍 Detalle de Dispersión")
-    # Boxplot para ver si hay sitios específicos que "ensucian" el promedio del slot
-    fig_box = px.box(df[df['Slot_Num'].isin(selección)], x='Slot_Num', y='Temp', color='Slot_Num')
-    st.plotly_chart(fig_box, use_container_width=True)
+    
+    # --- BOXPLOT DE DISPERSIÓN ---
+    st.subheader("📊 Salud de Slots: Dispersión en la Red")
+    st.info("Este gráfico muestra qué tan 'parejos' están los slots en todos los sitios. Si un Slot tiene muchos puntos aislados (outliers) arriba, significa que hay sitios específicos con problemas.")
+    
+    if seleccion:
+        fig_box = px.box(
+            df[df['Slot_Num'].isin(seleccion)], 
+            x='Slot_Num', 
+            y='Temp', 
+            color='Slot_Num',
+            points="outliers",
+            title="Distribución Térmica por Slot (Toda la Red)"
+        )
+        st.plotly_chart(fig_box, use_container_width=True)
+
 else:
-    st.warning("Aún no existe el archivo histórico. Dale al botón 'Procesar/Actualizar Red' en el panel de la izquierda.")
+    st.warning("Primero debes actualizar la base de datos desde el panel lateral.")
