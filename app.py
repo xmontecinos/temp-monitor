@@ -25,18 +25,19 @@ def extraer_datos_masivo(path):
             if not ts_match: return []
             ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
             
-            # Ajuste de consistencia: NE Name -> NEName
             bloques = re.split(r'NE Name\s*:\s*', content)
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
                 nombre_sitio = lineas[0].strip().split()[0]
                 
+                # Capturamos Subrack (r[0]), Slot (r[1]) y Temp (r[2])
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
                 for r in filas:
                     rows.append({
                         "Timestamp": ts, 
                         "Sitio": nombre_sitio, 
+                        "Subrack": int(r[0]),
                         "Slot": int(r[1]),
                         "Temp": int(r[2]), 
                         "ID_Full": f"{nombre_sitio} (S:{r[0]}-L:{r[1]})"
@@ -68,8 +69,9 @@ if archivos_lista:
     
     df_actual = st.session_state["df_now"]
 
-    tab_dash, tab_alertas, tab_busq, tab_hist = st.tabs([
-        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"
+    # SE AÑADE LA NUEVA PESTAÑA "📈 RED POR SLOT"
+    tab_dash, tab_alertas, tab_busq, tab_hist, tab_red = st.tabs([
+        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO", "📈 RED POR SLOT"
     ])
 
     # --- PESTAÑA 0: DASHBOARD ---
@@ -77,9 +79,7 @@ if archivos_lista:
         if not df_actual.empty:
             ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
             total_sitios_red = df_actual['Sitio'].nunique()
-            
             st.title("📊 Monitor de Salud de Red")
-            
             c_info1, c_info2 = st.columns(2)
             c_info1.info(f"🕒 **Horario del Reporte:** {ultima_hora}")
             c_info2.success(f"📍 **Sitios Registrados en este Reporte:** {total_sitios_red}")
@@ -101,72 +101,83 @@ if archivos_lista:
             with m4:
                 st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><p style="color:#16a34a; margin:0; font-weight:bold;">< {UMBRAL_PREVENTIVO}°C</p><h1 style="color:#166534; margin:5px 0; font-size:45px;">{len(t_ok)}</h1><small style="color:#166534;">En sitios OK</small></div>', unsafe_allow_html=True)
 
-            if not t_crit.empty:
-                st.divider()
-                st.subheader("🔝 Top Slots Críticos")
-                res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant').sort_values('Cant', ascending=False).head(10)
-                res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
-                
-                st.divider()
-                st.subheader("⚠️ Detalle de Sitios Críticos por Slot")
-                slot_foco = st.selectbox("Selecciona un Slot para ver sitios afectados:", sorted(t_crit['Slot'].unique()))
-                df_foco = t_crit[t_crit['Slot'] == slot_foco][['Sitio', 'Temp', 'ID_Full']].sort_values('Temp', ascending=False)
-                
-                df_xlsx = to_excel(df_foco)
-                st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
-                st.dataframe(df_foco, use_container_width=True, hide_index=True)
-
-    # --- PESTAÑA 3: HISTÓRICO ---
+    # --- PESTAÑA 3: HISTÓRICO (POR SITIO) ---
     with tab_hist:
-        st.subheader("📈 Gestión Histórica (Parquet)")
+        st.subheader("📈 Gestión Histórica por Sitio")
         c1, c2 = st.columns(2)
-        
         with c1:
-            num_reportes = st.slider("Archivos a incluir:", 1, len(archivos_lista), min(50, len(archivos_lista)))
-            if st.button("🔥 Generar/Actualizar Base Parquet"):
+            num_reportes = st.slider("Archivos a incluir:", 1, len(archivos_lista), min(50, len(archivos_lista)), key="slider_hist")
+            if st.button("🔥 Generar/Actualizar Base Parquet", key="btn_gen"):
                 all_dfs = []
                 progreso_bar = st.progress(0)
                 texto_estado = st.empty()
-                
                 for i, p in enumerate(archivos_lista[:num_reportes]):
                     texto_estado.text(f"Procesando ({i+1}/{num_reportes}): {os.path.basename(p)}")
                     progreso_bar.progress((i + 1) / num_reportes)
-                    
                     data = extraer_datos_masivo(p)
                     if data:
                         temp_df = pd.DataFrame(data)
-                        temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
+                        # Agrupación por sitio
+                        temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full', 'Subrack', 'Slot'])['Temp'].max().reset_index()
                         all_dfs.append(temp_df)
                     if i % 25 == 0: gc.collect()
-                
                 if all_dfs:
                     df_final = pd.concat(all_dfs, ignore_index=True)
                     df_final.to_parquet(PARQUET_FILE, index=False)
                     st.session_state["df_full"] = df_final
-                    texto_estado.success(f"✅ ¡Base Parquet lista con {len(df_final)} registros!")
+                    texto_estado.success(f"✅ ¡Base Parquet lista!")
 
         with c2:
-            if st.button("📂 Cargar desde Parquet"):
+            if st.button("📂 Cargar desde Parquet", key="btn_load"):
                 if os.path.exists(PARQUET_FILE):
                     st.session_state["df_full"] = pd.read_parquet(PARQUET_FILE)
-                    st.success(f"✅ Datos cargados: {len(st.session_state['df_full'])} filas.")
-                else: 
-                    st.error("No existe el archivo Parquet. Genéralo primero.")
+                    st.success("✅ Datos cargados.")
 
         if "df_full" in st.session_state:
             st.divider()
             df_p = st.session_state["df_full"]
-            sitio_sel = st.selectbox("Sitio Histórico:", sorted(df_p['Sitio'].unique()))
+            sitio_sel = st.selectbox("Seleccionar Sitio:", sorted(df_p['Sitio'].unique()))
             df_s = df_p[df_p['Sitio'] == sitio_sel]
             ids = sorted(df_s['ID_Full'].unique())
-            sel = st.multiselect("Comparar Slots:", ids, default=ids[:2] if ids else [])
+            sel = st.multiselect("Comparar Slots del sitio:", ids, default=ids[:2] if ids else [])
             if sel:
-                fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
-                             x='Timestamp', y='Temp', color='ID_Full', markers=True,
-                             title=f"Evolución Térmica Histórica: {sitio_sel}")
+                fig = px.line(df_s[df_s['ID_Full'].isin(sel)], x='Timestamp', y='Temp', color='ID_Full', markers=True)
                 fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                 st.plotly_chart(fig, use_container_width=True)
+
+    # --- PESTAÑA 4: RED POR SLOT (NUEVA) ---
+    with tab_red:
+        st.subheader("🌐 Análisis Global de Red (Promedio por Hardware)")
+        if "df_full" in st.session_state:
+            df_r = st.session_state["df_full"]
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                sub_sel = st.selectbox("Seleccionar Subrack No.:", sorted(df_r['Subrack'].unique()))
+            with col_b:
+                slot_sel = st.multiselect("Seleccionar Slot No.:", sorted(df_r['Slot'].unique()), default=[0, 1])
+
+            if slot_sel:
+                # Filtramos la red por el hardware específico (independiente del sitio)
+                df_filtro_red = df_r[(df_r['Subrack'] == sub_sel) & (df_r['Slot'].isin(slot_sel))]
+                
+                # Agrupamos por hora y Slot para ver el comportamiento promedio de la red
+                df_resumen_red = df_filtro_red.groupby([df_filtro_red['Timestamp'].dt.floor('h'), 'Slot'])['Temp'].mean().reset_index()
+                
+                st.info(f"Mostrando el promedio de temperatura en toda la red para Subrack {sub_sel} y Slots {slot_sel}")
+                
+                fig_red = px.line(df_resumen_red, x='Timestamp', y='Temp', color='Slot', 
+                                 title=f"Comportamiento Histórico Red: Subrack {sub_sel}",
+                                 labels={'Temp': 'Temp Promedio (°C)'}, markers=True)
+                fig_red.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+                st.plotly_chart(fig_red, use_container_width=True)
+                
+                # Tabla de máximos detectados en ese hardware
+                st.subheader("🔥 Máximos detectados en este Hardware (Top Sitios)")
+                df_max_hw = df_filtro_red.sort_values('Temp', ascending=False).head(10)
+                st.table(df_max_hw[['Timestamp', 'Sitio', 'Subrack', 'Slot', 'Temp']])
+        else:
+            st.warning("Por favor, carga o genera la base de datos en la pestaña HISTÓRICO primero.")
 
     # --- OTRAS PESTAÑAS ---
     with tab_alertas:
@@ -177,7 +188,7 @@ if archivos_lista:
         else: st.success("✅ Red estable.")
 
     with tab_busq:
-        s = st.selectbox("Buscar Sitio:", sorted(df_actual['Sitio'].unique()))
+        s = st.selectbox("Buscar Sitio:", sorted(df_actual['Sitio'].unique()), key="busq_red")
         st.dataframe(df_actual[df_actual['Sitio'] == s], use_container_width=True)
 else:
     st.warning(f"⚠️ No hay archivos en '{FOLDER_PATH}'.")
