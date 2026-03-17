@@ -167,39 +167,7 @@ if archivos_lista:
                              title=f"Evolución Térmica Histórica: {sitio_sel}")
                 fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                 st.plotly_chart(fig, use_container_width=True)
-# --- PESTAÑA 4: RED POR SLOT (NUEVA) ---
-    with tab_red:
-        st.subheader("🌐 Análisis Global de Red (Promedio por Hardware)")
-        if "df_full" in st.session_state:
-            df_r = st.session_state["df_full"]
-            
-            col_a, col_b = st.columns(2)
-            with col_a:
-                sub_sel = st.selectbox("Seleccionar Subrack No.:", sorted(df_r['Subrack'].unique()))
-            with col_b:
-                slot_sel = st.multiselect("Seleccionar Slot No.:", sorted(df_r['Slot'].unique()), default=[0, 1])
 
-            if slot_sel:
-                # Filtramos la red por el hardware específico (independiente del sitio)
-                df_filtro_red = df_r[(df_r['Subrack'] == sub_sel) & (df_r['Slot'].isin(slot_sel))]
-                
-                # Agrupamos por hora y Slot para ver el comportamiento promedio de la red
-                df_resumen_red = df_filtro_red.groupby([df_filtro_red['Timestamp'].dt.floor('h'), 'Slot'])['Temp'].mean().reset_index()
-                
-                st.info(f"Mostrando el promedio de temperatura en toda la red para Subrack {sub_sel} y Slots {slot_sel}")
-                
-                fig_red = px.line(df_resumen_red, x='Timestamp', y='Temp', color='Slot', 
-                                 title=f"Comportamiento Histórico Red: Subrack {sub_sel}",
-                                 labels={'Temp': 'Temp Promedio (°C)'}, markers=True)
-                fig_red.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
-                st.plotly_chart(fig_red, use_container_width=True)
-                
-                # Tabla de máximos detectados en ese hardware
-                st.subheader("🔥 Máximos detectados en este Hardware (Top Sitios)")
-                df_max_hw = df_filtro_red.sort_values('Temp', ascending=False).head(10)
-                st.table(df_max_hw[['Timestamp', 'Sitio', 'Subrack', 'Slot', 'Temp']])
-        else:
-            st.warning("Por favor, carga o genera la base de datos en la pestaña HISTÓRICO primero.")
     # --- OTRAS PESTAÑAS ---
     with tab_alertas:
         crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
