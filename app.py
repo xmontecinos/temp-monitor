@@ -68,8 +68,9 @@ if archivos_lista:
     
     df_actual = st.session_state["df_now"]
 
-    tab_dash, tab_alertas, tab_busq, tab_hist = st.tabs([
-        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"
+    # Definición de Pestañas (Se agregó la 5ta pestaña para Slots)
+    tab_dash, tab_alertas, tab_busq, tab_hist, tab_slot = st.tabs([
+        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO SITIO", "🎰 HISTÓRICO SLOT"
     ])
 
     # --- PESTAÑA 0: DASHBOARD ---
@@ -117,13 +118,13 @@ if archivos_lista:
                 st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
                 st.dataframe(df_foco, use_container_width=True, hide_index=True)
 
-    # --- PESTAÑA 3: HISTÓRICO ---
+    # --- PESTAÑA 3: HISTÓRICO POR SITIO ---
     with tab_hist:
-        st.subheader("📈 Gestión Histórica (Parquet)")
+        st.subheader("📈 Gestión Histórica General")
         c1, c2 = st.columns(2)
         
         with c1:
-            num_reportes = st.slider("Archivos a incluir:", 1, len(archivos_lista), min(50, len(archivos_lista)))
+            num_reportes = st.slider("Archivos a incluir en la base:", 1, len(archivos_lista), min(50, len(archivos_lista)))
             if st.button("🔥 Generar/Actualizar Base Parquet"):
                 all_dfs = []
                 progreso_bar = st.progress(0)
@@ -136,7 +137,8 @@ if archivos_lista:
                     data = extraer_datos_masivo(p)
                     if data:
                         temp_df = pd.DataFrame(data)
-                        temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
+                        # Agrupamos para reducir tamaño del parquet (max temp por hora)
+                        temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'Slot', 'ID_Full'])['Temp'].max().reset_index()
                         all_dfs.append(temp_df)
                     if i % 25 == 0: gc.collect()
                 
@@ -157,10 +159,11 @@ if archivos_lista:
         if "df_full" in st.session_state:
             st.divider()
             df_p = st.session_state["df_full"]
-            sitio_sel = st.selectbox("Sitio Histórico:", sorted(df_p['Sitio'].unique()))
+            st.subheader("🔍 Evolución por Sitio")
+            sitio_sel = st.selectbox("Elegir Sitio:", sorted(df_p['Sitio'].unique()))
             df_s = df_p[df_p['Sitio'] == sitio_sel]
             ids = sorted(df_s['ID_Full'].unique())
-            sel = st.multiselect("Comparar Slots:", ids, default=ids[:2] if ids else [])
+            sel = st.multiselect("Comparar Slots del sitio:", ids, default=ids[:2] if ids else [])
             if sel:
                 fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
                              x='Timestamp', y='Temp', color='ID_Full', markers=True,
@@ -168,7 +171,57 @@ if archivos_lista:
                 fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                 st.plotly_chart(fig, use_container_width=True)
 
-    # --- OTRAS PESTAÑAS ---
+    # --- PESTAÑA 4: HISTÓRICO POR SLOT (NUEVA) ---
+    with tab_slot:
+        st.subheader("🎰 Análisis de Comportamiento por Número de Slot")
+        
+        if "df_full" in st.session_state:
+            df_p = st.session_state["df_full"]
+            
+            # Filtro de Slot
+            slots_disponibles = sorted(df_p['Slot'].unique())
+            slot_sel = st.selectbox("Selecciona el Número de Slot a analizar en la Red:", slots_disponibles)
+            
+            # Filtrar datos por el slot elegido
+            df_slot_data = df_p[df_p['Slot'] == slot_sel]
+            
+            # Selección de sitios para comparar ese slot
+            sitios_con_ese_slot = sorted(df_slot_data['Sitio'].unique())
+            sitios_comparar = st.multiselect(
+                f"Selecciona Sitios para comparar el Slot {slot_sel}:", 
+                sitios_con_ese_slot,
+                max_selections=15,
+                placeholder="Elige sitios para graficar"
+            )
+            
+            if sitios_comparar:
+                df_plot_slot = df_slot_data[df_slot_data['Sitio'].isin(sitios_comparar)]
+                
+                fig_slot = px.line(
+                    df_plot_slot, 
+                    x='Timestamp', 
+                    y='Temp', 
+                    color='Sitio', 
+                    markers=True,
+                    title=f"Comparativa de Red: Slot {slot_sel}",
+                    labels={'Temp': 'Temperatura °C'}
+                )
+                fig_slot.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
+                fig_slot.add_hline(y=UMBRAL_PREVENTIVO, line_dash="dot", line_color="orange", annotation_text="PREVENTIVO")
+                
+                st.plotly_chart(fig_slot, use_container_width=True)
+                
+                # Tabla comparativa de rendimiento
+                st.write("### 📊 Resumen Estadístico del Slot")
+                resumen_slot = df_plot_slot.groupby('Sitio')['Temp'].agg(['max', 'mean', 'min']).reset_index()
+                resumen_slot.columns = ['Sitio', 'Máx °C', 'Promedio °C', 'Mín °C']
+                st.dataframe(resumen_slot.sort_values('Máx °C', ascending=False), use_container_width=True, hide_index=True)
+            else:
+                st.info("👆 Selecciona al menos un sitio arriba para ver la tendencia del slot.")
+        else:
+            st.warning("⚠️ Debes cargar la base histórica en la pestaña anterior para usar esta función.")
+
+    # --- PESTAÑA ALERTAS ---
     with tab_alertas:
         crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
         if not crit_all.empty:
@@ -176,8 +229,10 @@ if archivos_lista:
                 st.error(f"⚠️ {r['Sitio']} - Slot {r['Slot']}: {r['Temp']}°C")
         else: st.success("✅ Red estable.")
 
+    # --- PESTAÑA BUSCADOR ---
     with tab_busq:
-        s = st.selectbox("Buscar Sitio:", sorted(df_actual['Sitio'].unique()))
+        s = st.selectbox("Buscar Sitio Actual:", sorted(df_actual['Sitio'].unique()))
         st.dataframe(df_actual[df_actual['Sitio'] == s], use_container_width=True)
+
 else:
-    st.warning(f"⚠️ No hay archivos en '{FOLDER_PATH}'.")
+    st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
