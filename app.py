@@ -117,34 +117,41 @@ if archivos_lista:
                 st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
                 st.dataframe(df_foco, use_container_width=True, hide_index=True)
 
-    # --- PESTAÑA 3: HISTÓRICO ---
-    with tab_hist:
-        st.subheader("📈 Gestión Histórica (Parquet)")
-        c1, c2 = st.columns(2)
+ # --- PESTAÑA 3: HISTÓRICO (Optimizado) ---
+if st.button("🔥 Generar/Actualizar Base Parquet"):
+    all_dfs = []
+    progreso_bar = st.progress(0)
+    texto_estado = st.empty()
+    
+    for i, p in enumerate(archivos_lista[:num_reportes]):
+        texto_estado.text(f"Procesando ({i+1}/{num_reportes}): {os.path.basename(p)}")
+        progreso_bar.progress((i + 1) / num_reportes)
         
-        with c1:
-            num_reportes = st.slider("Archivos a incluir:", 1, len(archivos_lista), min(50, len(archivos_lista)))
-            if st.button("🔥 Generar/Actualizar Base Parquet"):
-                all_dfs = []
-                progreso_bar = st.progress(0)
-                texto_estado = st.empty()
-                
-                for i, p in enumerate(archivos_lista[:num_reportes]):
-                    texto_estado.text(f"Procesando ({i+1}/{num_reportes}): {os.path.basename(p)}")
-                    progreso_bar.progress((i + 1) / num_reportes)
-                    
-                    data = extraer_datos_masivo(p)
-                    if data:
-                        temp_df = pd.DataFrame(data)
-                        temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])['Temp'].max().reset_index()
-                        all_dfs.append(temp_df)
-                    if i % 25 == 0: gc.collect()
-                
-                if all_dfs:
-                    df_final = pd.concat(all_dfs, ignore_index=True)
-                    df_final.to_parquet(PARQUET_FILE, index=False)
-                    st.session_state["df_full"] = df_final
-                    texto_estado.success(f"✅ ¡Base Parquet lista con {len(df_final)} registros!")
+        data = extraer_datos_masivo(p)
+        if data:
+            temp_df = pd.DataFrame(data)
+            
+            # REDUCCIÓN DE MEMORIA: Convertir tipos de datos
+            temp_df['Temp'] = temp_df['Temp'].astype('int16')
+            temp_df['Slot'] = temp_df['Slot'].astype('int8')
+            
+            # Agrupar inmediatamente para reducir filas antes de acumular
+            temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'], as_index=False)['Temp'].max()
+            
+            all_dfs.append(temp_df)
+        
+        # Liberar memoria cada 10 archivos
+        if i % 10 == 0:
+            gc.collect()
+    
+    if all_dfs:
+        df_final = pd.concat(all_dfs, ignore_index=True)
+        # Forzar tipos de datos finales para que el archivo Parquet sea ligero
+        df_final['Temp'] = df_final['Temp'].astype('int16')
+        
+        df_final.to_parquet(PARQUET_FILE, index=False)
+        st.session_state["df_full"] = df_final
+        texto_estado.success(f"✅ ¡Base Parquet lista!")
 
         with c2:
             if st.button("📂 Cargar desde Parquet"):
