@@ -73,16 +73,17 @@ if archivos_lista:
         "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"
     ])
 
-    # --- PESTAÑA 0: DASHBOARD ---
+   # --- PESTAÑA 0: DASHBOARD ---
     with tab_dash:
         if not df_actual.empty:
             ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
             total_sitios_red = df_actual['Sitio'].nunique()
+            
             st.title("📊 Monitor de Salud de Red")
             
             c_info1, c_info2 = st.columns(2)
-            c_info1.info(f"🕒 **Reporte Actual:** {ultima_hora}")
-            c_info2.success(f"📍 **Sitios en Red:** {total_sitios_red}")
+            c_info1.info(f"🕒 **Horario del Reporte:** {ultima_hora}")
+            c_info2.success(f"📍 **Sitios Registrados en este Reporte:** {total_sitios_red}")
 
             df_sitios_max = df_actual.groupby('Sitio')['Temp'].max().reset_index()
             s_crit = df_sitios_max[df_sitios_max['Temp'] >= UMBRAL_CRITICO]
@@ -94,20 +95,28 @@ if archivos_lista:
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Tarjetas", f"{len(df_actual):,}")
-            
             with m2:
-                st.markdown(f'<div style="background-color:#fee2e2; border:2px solid #dc2626; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#991b1b; margin:0;">CRÍTICO</h4><h1 style="color:#dc2626; margin:5px 0;">{len(t_crit)}</h1><small>En {len(s_crit)} sitios</small></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="background-color:#fee2e2; border:2px solid #dc2626; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#991b1b; margin:0;">CRÍTICO</h4><p style="color:#dc2626; margin:0; font-weight:bold;">≥ {UMBRAL_CRITICO}°C</p><h1 style="color:#dc2626; margin:5px 0; font-size:45px;">{len(t_crit)}</h1><small style="color:#991b1b;">En <b>{len(s_crit)}</b> sitios</small></div>', unsafe_allow_html=True)
             with m3:
-                st.markdown(f'<div style="background-color:#fef9c3; border:2px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4><h1 style="color:#ca8a04; margin:5px 0;">{len(t_prev)}</h1><small>En {len(s_prev)} sitios</small></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="background-color:#fef9c3; border:2px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4><p style="color:#ca8a04; margin:0; font-weight:bold;">{UMBRAL_PREVENTIVO}-{UMBRAL_CRITICO-1}°C</p><h1 style="color:#ca8a04; margin:5px 0; font-size:45px;">{len(t_prev)}</h1><small style="color:#854d0e;">En <b>{len(s_prev)}</b> sitios</small></div>', unsafe_allow_html=True)
             with m4:
-                st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><h1 style="color:#166534; margin:5px 0;">{len(t_ok)}</h1><small>Sistema Estable</small></div>', unsafe_allow_html=True)
+                st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><p style="color:#16a34a; margin:0; font-weight:bold;">< {UMBRAL_PREVENTIVO}°C</p><h1 style="color:#166534; margin:5px 0; font-size:45px;">{len(t_ok)}</h1><small style="color:#166534;">En sitios OK</small></div>', unsafe_allow_html=True)
 
             if not t_crit.empty:
                 st.divider()
                 st.subheader("🔝 Top Slots Críticos")
                 res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant').sort_values('Cant', ascending=False).head(10)
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', color_continuous_scale='Reds'), use_container_width=True)
+                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
+                
+                st.divider()
+                st.subheader("⚠️ Detalle de Sitios Críticos por Slot")
+                slot_foco = st.selectbox("Selecciona un Slot para ver sitios afectados:", sorted(t_crit['Slot'].unique()))
+                df_foco = t_crit[t_crit['Slot'] == slot_foco][['Sitio', 'Temp', 'ID_Full']].sort_values('Temp', ascending=False)
+                
+                df_xlsx = to_excel(df_foco)
+                st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
+                st.dataframe(df_foco, use_container_width=True, hide_index=True)
 
     # --- PESTAÑA 3: HISTÓRICO (SOLUCIÓN AL ERROR DE MEMORIA Y APPEND) ---
     with tab_hist:
