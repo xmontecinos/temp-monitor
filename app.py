@@ -5,6 +5,8 @@ import re
 import plotly.express as px
 import gc
 from io import BytesIO
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # 1. CONFIGURACIÓN DE PÁGINA
 st.set_page_config(page_title="Monitor Red - Huawei", layout="wide")
@@ -107,84 +109,103 @@ if archivos_lista:
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
                 st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', color_continuous_scale='Reds'), use_container_width=True)
 
-    # --- PESTAÑA 3: HISTÓRICO (OPTIMIZADA) ---
+    # --- PESTAÑA 3: HISTÓRICO (SOLUCIÓN AL ERROR DE MEMORIA Y APPEND) ---
     with tab_hist:
         st.subheader("📈 Gestión Histórica de Gran Volumen")
         c1, c2 = st.columns(2)
         
         with c1:
-            num_reportes = st.slider("Cantidad de archivos a procesar:", 1, len(archivos_lista), min(100, len(archivos_lista)))
-            if st.button("🔥 Reconstruir Base Parquet (Modo Seguro)"):
+            num_reportes = st.slider("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
+            if st.button("🔥 Reconstruir Base Parquet (Modo PyArrow)"):
                 progreso_bar = st.progress(0)
                 texto_estado = st.empty()
                 
-                # Eliminar base anterior para evitar duplicados si se reconstruye
+                # Limpiar archivo anterior
                 if os.path.exists(PARQUET_FILE):
                     os.remove(PARQUET_FILE)
 
-                for i, p in enumerate(archivos_lista[:num_reportes]):
-                    texto_estado.text(f"Procesando {i+1}/{num_reportes}: {os.path.basename(p)}")
-                    progreso_bar.progress((i + 1) / num_reportes)
+                writer = None
+                try:
+                    for i, p in enumerate(archivos_lista[:num_reportes]):
+                        texto_estado.text(f"Procesando {i+1}/{num_reportes}: {os.path.basename(p)}")
+                        progreso_bar.progress((i + 1) / num_reportes)
+                        
+                        data = extraer_datos_masivo(p)
+                        if data:
+                            temp_df = pd.DataFrame(data)
+                            
+                            # Downcasting para ahorrar RAM
+                            temp_df['Slot'] = temp_df['Slot'].astype('int16')
+                            temp_df['Temp'] = temp_df['Temp'].astype('int16')
+                            
+                            # Agrupar por hora para compactar datos
+                            temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])[['Temp', 'Slot']].max().reset_index()
+                            
+                            # Convertir a tabla de PyArrow
+                            table = pa.Table.from_pandas(temp_df)
+                            
+                            # Escritura incremental real
+                            if writer is None:
+                                writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
+                            
+                            writer.write_table(table)
+                        
+                        # Limpieza de basura cada 25 archivos
+                        if i % 25 == 0:
+                            gc.collect()
                     
-                    data = extraer_datos_masivo(p)
-                    if data:
-                        temp_df = pd.DataFrame(data)
-                        
-                        # Optimización 1: Reducir tipos de datos para ahorrar RAM
-                        temp_df['Slot'] = temp_df['Slot'].astype('int16')
-                        temp_df['Temp'] = temp_df['Temp'].astype('int16')
-                        
-                        # Optimización 2: Agrupar por hora ANTES de guardar (reduce filas drásticamente)
-                        temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])[['Temp', 'Slot']].max().reset_index()
-                        
-                        # Optimización 3: Escritura incremental (Append)
-                        if not os.path.exists(PARQUET_FILE):
-                            temp_df.to_parquet(PARQUET_FILE, engine='pyarrow', index=False)
-                        else:
-                            temp_df.to_parquet(PARQUET_FILE, engine='pyarrow', index=False, append=True)
-                    
-                    # Optimización 4: Forzar limpieza de memoria
-                    if i % 10 == 0:
-                        gc.collect()
+                    texto_estado.success(f"✅ ¡Base Parquet generada con éxito ({num_reportes} archivos)!")
                 
-                texto_estado.success("✅ Base Parquet actualizada correctamente.")
+                except Exception as e:
+                    st.error(f"Error crítico: {e}")
+                
+                finally:
+                    if writer:
+                        writer.close()
 
         with c2:
-            if st.button("📂 Cargar Datos desde Disco"):
+            if st.button("📂 Cargar Datos Históricos"):
                 if os.path.exists(PARQUET_FILE):
-                    # Solo cargamos las columnas necesarias para liberar RAM
+                    # Cargamos solo columnas esenciales si el archivo es muy masivo
                     st.session_state["df_full"] = pd.read_parquet(PARQUET_FILE)
-                    st.success(f"✅ Cargados {len(st.session_state['df_full']):,} registros.")
+                    st.success(f"✅ Datos cargados: {len(st.session_state['df_full']):,} filas.")
                 else: 
-                    st.error("No existe el archivo. Genéralo primero.")
+                    st.error("Archivo Parquet no encontrado.")
 
         if "df_full" in st.session_state:
             st.divider()
             df_p = st.session_state["df_full"]
-            sitio_sel = st.selectbox("Seleccionar Sitio Histórico:", sorted(df_p['Sitio'].unique()))
+            
+            # Filtros de búsqueda en histórico
+            c_f1, c_f2 = st.columns(2)
+            with c_f1:
+                sitio_sel = st.selectbox("Sitio:", sorted(df_p['Sitio'].unique()))
             
             df_s = df_p[df_p['Sitio'] == sitio_sel].copy()
             ids = sorted(df_s['ID_Full'].unique())
-            sel = st.multiselect("Comparar Slots:", ids, default=ids[:2] if ids else [])
+            
+            with c_f2:
+                sel = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
             
             if sel:
                 fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
                              x='Timestamp', y='Temp', color='ID_Full', markers=True,
-                             title=f"Evolución Térmica: {sitio_sel}")
-                fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
+                             title=f"Evolución Térmica Histórica: {sitio_sel}")
+                fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+                fig.update_layout(hovermode="x unified")
                 st.plotly_chart(fig, use_container_width=True)
 
-    # --- PESTAÑA ALERTAS Y BUSCADOR ---
+    # --- OTRAS PESTAÑAS ---
     with tab_alertas:
         crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
         if not crit_all.empty:
-            st.warning(f"Se detectaron {len(crit_all)} tarjetas por encima de {UMBRAL_CRITICO}°C")
+            st.error(f"⚠️ Se encontraron {len(crit_all)} slots críticos.")
             st.dataframe(crit_all[['Sitio', 'Slot', 'Temp']].sort_values('Temp', ascending=False), use_container_width=True)
-        else: st.success("✅ No hay alertas críticas actuales.")
+        else: st.success("✅ Todo OK.")
 
     with tab_busq:
-        s = st.selectbox("Filtrar por nombre de sitio:", sorted(df_actual['Sitio'].unique()))
-        st.dataframe(df_actual[df_actual['Sitio'] == s], use_container_width=True)
+        s_busq = st.selectbox("Buscar por Sitio:", sorted(df_actual['Sitio'].unique()))
+        st.dataframe(df_actual[df_actual['Sitio'] == s_busq], use_container_width=True)
 
 else:
-    st.warning(f"⚠️ No se encontraron archivos .txt en la carpeta '{FOLDER_PATH}'.")
+    st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
