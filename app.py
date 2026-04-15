@@ -118,58 +118,76 @@ if archivos_lista:
                 st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
                 st.dataframe(df_foco, use_container_width=True, hide_index=True)
 
-    # --- PESTAÑA 3: HISTÓRICO (SOLUCIÓN AL ERROR DE MEMORIA Y APPEND) ---
+   # --- PESTAÑA 3: HISTÓRICO (CORREGIDO) ---
     with tab_hist:
-        st.subheader("📈 Gestión Histórica (Optimizado para +1000 archivos)")
+        st.subheader("📈 Gestión Histórica de Gran Volumen")
         c1, c2 = st.columns(2)
         
-     with c1:
+        with c1:
             num_reportes = st.slider("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
-            if st.button("🔥 Reconstruir Base Parquet"):
+            reconstruir = st.button("🔥 Reconstruir Base Parquet (Modo PyArrow)")
+            
+            if reconstruir:
+                progreso_bar = st.progress(0)
+                texto_estado = st.empty()
                 
-                # --- AQUÍ VA TU LÓGICA DE PROCESAMIENTO ---
-                # (Asegúrate de que el bloque 'finally' cierre el writer de Parquet)
+                if os.path.exists(PARQUET_FILE):
+                    os.remove(PARQUET_FILE)
+
+                writer = None
+                try:
+                    for i, p in enumerate(archivos_lista[:num_reportes]):
+                        texto_estado.text(f"Procesando {i+1}/{num_reportes}: {os.path.basename(p)}")
+                        progreso_bar.progress((i + 1) / num_reportes)
+                        
+                        data = extraer_datos_masivo(p)
+                        if data:
+                            temp_df = pd.DataFrame(data)
+                            temp_df['Slot'] = temp_df['Slot'].astype('int16')
+                            temp_df['Temp'] = temp_df['Temp'].astype('int16')
+                            
+                            temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])[['Temp', 'Slot']].max().reset_index()
+                            
+                            table = pa.Table.from_pandas(temp_df)
+                            if writer is None:
+                                writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
+                            writer.write_table(table)
+                        
+                        if i % 25 == 0:
+                            gc.collect()
+                    
+                    texto_estado.success(f"✅ ¡Base Parquet generada!")
+                    st.rerun() # Refresca para que aparezca el buscador
                 
-                # Al final de todo el proceso exitoso:
-                st.success("✅ Base reconstruida con éxito.")
-                
-                # ESTA ES LA LÍNEA CLAVE:
-                st.rerun()
+                except Exception as e:
+                    st.error(f"Error crítico: {e}")
+                finally:
+                    if writer:
+                        writer.close()
 
         with c2:
             if os.path.exists(PARQUET_FILE):
-                # PASO 1: Leer solo la columna de Sitios para el buscador
-                # Esto es virtualmente instantáneo y no consume RAM
-                tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
-                sitios_disponibles = tabla_sitios.to_pandas()['Sitio'].unique()
-                
-                sitio_sel = st.selectbox("🔍 Buscar Sitio en Historial:", sorted(sitios_disponibles))
-            else:
+                try:
+                    # Leemos solo la columna de sitios para no saturar RAM
+                    tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
+                    sitios_disponibles = tabla_sitios.to_pandas()['Sitio'].unique()
+                    sitio_sel = st.selectbox("🔍 Buscar Sitio en Historial:", sorted(sitios_disponibles))
+                    
+                    if sitio_sel:
+                        df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
+                        ids = sorted(df_s['ID_Full'].unique())
+                        sel = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
+                        
+                        if sel:
+                            fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
+                                         x='Timestamp', y='Temp', color='ID_Full', markers=True,
+                                         title=f"Evolución Térmica: {sitio_sel}")
+                            fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+                            st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error al cargar historial: {e}")
+            else: 
                 st.info("Aún no has generado la base histórica.")
-                sitio_sel = None
-
-        if sitio_sel:
-            # PASO 2: Carga selectiva usando FILTROS de PyArrow
-            # Solo traemos del disco los datos que necesitamos graficar
-            df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
-            
-            st.divider()
-            ids = sorted(df_s['ID_Full'].unique())
-            sel = st.multiselect("Filtrar Slots:", ids, default=ids)
-            
-            if sel:
-                # Graficamos solo lo necesario
-                fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
-                             x='Timestamp', y='Temp', color='ID_Full', 
-                             markers=True,
-                             title=f"Historial Térmico: {sitio_sel}")
-                
-                fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Liberación explícita de memoria
-                del df_s
-                gc.collect()
 
     # --- OTRAS PESTAÑAS ---
     with tab_alertas:
