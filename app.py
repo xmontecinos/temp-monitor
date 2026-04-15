@@ -123,11 +123,18 @@ if archivos_lista:
         st.subheader("📈 Gestión Histórica (Optimizado para +1000 archivos)")
         c1, c2 = st.columns(2)
         
-        with c1:
+     with c1:
             num_reportes = st.slider("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
             if st.button("🔥 Reconstruir Base Parquet"):
-                # ... [Tu lógica de reconstrucción se mantiene igual, es eficiente] ...
-                st.success("Base reconstruida.")
+                
+                # --- AQUÍ VA TU LÓGICA DE PROCESAMIENTO ---
+                # (Asegúrate de que el bloque 'finally' cierre el writer de Parquet)
+                
+                # Al final de todo el proceso exitoso:
+                st.success("✅ Base reconstruida con éxito.")
+                
+                # ESTA ES LA LÍNEA CLAVE:
+                st.rerun()
 
         with c2:
             if os.path.exists(PARQUET_FILE):
