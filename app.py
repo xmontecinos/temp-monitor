@@ -152,7 +152,6 @@ if archivos_lista:
                         data = extraer_datos_masivo(p)
                         if data:
                             temp_df = pd.DataFrame(data)
-                            # Optimización de tipos de datos para Parquet
                             temp_df['Slot'] = temp_df['Slot'].astype('int16')
                             temp_df['Temp'] = temp_df['Temp'].astype('int16')
                             table = pa.Table.from_pandas(temp_df)
@@ -175,36 +174,44 @@ if archivos_lista:
                     fig_h = px.line(df_h, x='Timestamp', y='Temp', color='ID_Full', title=f"Evolución: {sitio_h}")
                     st.plotly_chart(fig_h, use_container_width=True)
 
-    # --- PESTAÑA 4: ANÁLISIS UPGRADE (LA QUE NECESITABAS) ---
+    # --- PESTAÑA 4: ANÁLISIS UPGRADE (REVISIÓN HORARIA) ---
     with tab_upgrade:
-        st.header("🚀 Seguimiento Térmico - Grupos de Upgrade")
+        st.header("🚀 Seguimiento Térmico Horario - Grupos de Upgrade")
         if os.path.exists(PARQUET_FILE):
             try:
                 # Cargar sitios para el multiselect
                 tabla_up = pq.read_table(PARQUET_FILE, columns=['Sitio'])
                 sitios_disponibles = sorted(tabla_up.to_pandas()['Sitio'].unique())
                 
-                sitios_sel = st.multiselect("Selecciona los sitios del Upgrade (puedes elegir los 93):", sitios_disponibles)
+                sitios_sel = st.multiselect("Selecciona los sitios del Upgrade para ver detalle por hora:", sitios_disponibles)
                 
                 if sitios_sel:
+                    # Filtramos por los sitios elegidos
                     df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', sitios_sel)])
                     
-                    # Gráfico de tendencia por día para reducir ruido visual
-                    df_up['Fecha'] = df_up['Timestamp'].dt.date
-                    resumen_up = df_up.groupby(['Fecha', 'Sitio'])['Temp'].max().reset_index()
+                    # Agrupamos por Timestamp (hora) y Sitio para ver la máxima por hora
+                    resumen_hora = df_up.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
                     
-                    fig_up = px.line(resumen_up, x='Fecha', y='Temp', color='Sitio', 
-                                    title="Evolución de Temperatura Máxima por Sitio", markers=True)
+                    fig_up = px.line(resumen_hora, 
+                                    x='Timestamp', 
+                                    y='Temp', 
+                                    color='Sitio', 
+                                    title="Evolución Horaria de Temperatura Máxima por Sitio",
+                                    markers=True)
                     
-                    fig_up.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+                    # Líneas de referencia para umbrales
+                    fig_up.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
+                    fig_up.add_hline(y=UMBRAL_PREVENTIVO, line_dash="dot", line_color="orange", annotation_text="PREVENTIVO")
+                    
                     st.plotly_chart(fig_up, use_container_width=True)
                     
-                    # Tabla de los que aún están calientes
-                    st.subheader("⚠️ Sitios que persisten con alta temperatura")
-                    s_mal = df_up[df_up['Temp'] >= UMBRAL_PREVENTIVO].groupby('Sitio')['Temp'].max().reset_index()
-                    st.dataframe(s_mal.sort_values('Temp', ascending=False), use_container_width=True)
-            except Exception as e: st.error(f"Error en Upgrade: {e}")
-        else: st.info("Genera la base histórica primero.")
+                    # Detalle adicional de los slots más calientes en el grupo seleccionado
+                    st.subheader("⚠️ Top Slots más calientes en sitios seleccionados")
+                    top_slots = df_up.sort_values('Temp', ascending=False).head(15)
+                    st.table(top_slots[['Timestamp', 'Sitio', 'Slot', 'Temp']])
+                    
+            except Exception as e: st.error(f"Error en análisis horario: {e}")
+        else: st.info("Genera la base histórica primero en la pestaña 'HISTÓRICO'.")
 
 else:
     st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
