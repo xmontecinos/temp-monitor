@@ -69,9 +69,9 @@ if archivos_lista:
     
     df_actual = st.session_state["df_now"]
 
-    tab_dash, tab_alertas, tab_busq, tab_hist = st.tabs([
-        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"
-    ])
+  tab_dash, tab_alertas, tab_busq, tab_hist, tab_upgrade = st.tabs([
+    "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO", "🚀 ANÁLISIS UPGRADE"
+])
 
    # --- PESTAÑA 0: DASHBOARD ---
     with tab_dash:
@@ -203,3 +203,67 @@ if archivos_lista:
 
 else:
     st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
+
+# --- PESTAÑA 4: ANÁLISIS UPGRADE (NUEVA) ---
+with tab_upgrade:
+    st.header("🚀 Seguimiento Térmico - Grupos de Upgrade")
+    
+    if os.path.exists(PARQUET_FILE):
+        try:
+            # 1. Cargar lista de sitios disponibles
+            tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
+            sitios_disponibles = sorted(tabla_sitios.to_pandas()['Sitio'].unique())
+            
+            # 2. Selección de sitios (puedes pegar los 93 nombres aquí)
+            sitios_sel = st.multiselect(
+                "Selecciona los sitios actualizados para comparar:", 
+                options=sitios_disponibles,
+                help="Puedes seleccionar múltiples sitios para ver cómo evolucionó su temperatura tras el upgrade."
+            )
+            
+            if sitios_sel:
+                # 3. Filtrado eficiente de la base histórica
+                df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', sitios_sel)])
+                
+                c1, c2 = st.columns([3, 1])
+                
+                with c1:
+                    # Agregamos por día y sitio para ver tendencias claras
+                    df_up['Fecha'] = df_up['Timestamp'].dt.date
+                    resumen_up = df_up.groupby(['Fecha', 'Sitio'])['Temp'].max().reset_index()
+                    
+                    fig_up = px.line(
+                        resumen_up, 
+                        x='Fecha', 
+                        y='Temp', 
+                        color='Sitio',
+                        title=f"Tendencia Térmica Máxima: {len(sitios_sel)} Sitios Seleccionados",
+                        markers=True
+                    )
+                    
+                    # Líneas de referencia
+                    fig_up.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
+                    fig_up.add_hline(y=UMBRAL_PREVENTIVO, line_dash="dot", line_color="orange", annotation_text="PREVENTIVO")
+                    
+                    st.plotly_chart(fig_up, use_container_width=True)
+
+                with c2:
+                    st.subheader("Resumen de Grupo")
+                    avg_temp = df_up['Temp'].mean()
+                    max_temp = df_up['Temp'].max()
+                    
+                    st.metric("Temp. Promedio Grupo", f"{avg_temp:.1f}°C")
+                    st.metric("Temp. Máxima Detectada", f"{max_temp}°C")
+                    
+                    # Mostrar tabla con los que siguen por encima del umbral
+                    st.write("🔴 **Sitios aún Críticos:**")
+                    s_siguen_mal = df_up[df_up['Temp'] >= UMBRAL_CRITICO]['Sitio'].unique()
+                    if len(s_siguen_mal) > 0:
+                        st.write(s_siguen_mal)
+                    else:
+                        st.success("Ningún sitio del grupo está en crítico actualmente.")
+
+        except Exception as e:
+            st.error(f"Error al cargar datos de upgrade: {e}")
+    else:
+        st.info("Primero debes generar la base histórica en la pestaña 'HISTÓRICO'.")
