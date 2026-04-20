@@ -31,7 +31,7 @@ def extraer_datos_masivo(path):
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
-                # NEName debe ir junto según el ledger
+                # NEName debe ir junto según requerimiento técnico
                 nombre_sitio = lineas[0].strip().split()[0]
                 
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
@@ -70,19 +70,20 @@ if archivos_lista:
     
     df_actual = st.session_state["df_now"]
 
-    # Pestañas corregidas (sin errores de indentación)
+    # Definición de pestañas (Indentación corregida)
     tab_dash, tab_alertas, tab_busq, tab_hist, tab_upgrade = st.tabs([
         "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO", "🚀 ANÁLISIS UPGRADE"
     ])
 
+    # --- PESTAÑA 0: DASHBOARD ---
     with tab_dash:
         if not df_actual.empty:
             ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
             total_sitios_red = df_actual['Sitio'].nunique()
             st.title("📊 Monitor de Salud de Red")
             c_info1, c_info2 = st.columns(2)
-            c_info1.info(f"🕒 **Último Reporte:** {ultima_hora}")
-            c_info2.success(f"📍 **Sitios en Red:** {total_sitios_red}")
+            c_info1.info(f"🕒 **Horario:** {ultima_hora}")
+            c_info2.success(f"📍 **Sitios en Reporte:** {total_sitios_red}")
 
             df_sitios_max = df_actual.groupby('Sitio')['Temp'].max().reset_index()
             t_crit = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
@@ -95,35 +96,44 @@ if archivos_lista:
             with m3: st.markdown(f'<div style="background-color:#fef9c3; border:2px solid #ca8a04; padding:10px; border-radius:10px; text-align:center;"><h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4><h1 style="color:#ca8a04; margin:5px 0;">{len(t_prev)}</h1></div>', unsafe_allow_html=True)
             with m4: st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:10px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><h1 style="color:#166534; margin:5px 0;">{len(t_ok)}</h1></div>', unsafe_allow_html=True)
 
+            if not t_crit.empty:
+                st.divider()
+                st.subheader("⚠️ Detalle Críticos por Slot")
+                slot_f = st.selectbox("Selecciona Slot:", sorted(t_crit['Slot'].unique()))
+                df_f = t_crit[t_crit['Slot'] == slot_f][['Sitio', 'Temp', 'ID_Full']].sort_values('Temp', ascending=False)
+                st.dataframe(df_f, use_container_width=True)
+
+    # --- PESTAÑA 1: ALERTAS ---
     with tab_alertas:
         crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
         if not crit_all.empty:
             st.error(f"⚠️ {len(crit_all)} slots críticos.")
-            st.dataframe(crit_all[['Sitio', 'Slot', 'Temp']].sort_values('Temp', ascending=False), width=None)
-        else: st.success("✅ Todo bajo control.")
+            # Corregido: eliminando el parámetro 'width' problemático
+            st.dataframe(crit_all[['Sitio', 'Slot', 'Temp']].sort_values('Temp', ascending=False), use_container_width=True)
+        else: st.success("✅ Todo OK.")
 
+    # --- PESTAÑA 2: BUSCADOR ---
     with tab_busq:
-        s_busq = st.selectbox("Buscar por Sitio:", sorted(df_actual['Sitio'].unique()))
-        st.dataframe(df_actual[df_actual['Sitio'] == s_busq], width=None)
+        s_busq = st.selectbox("Buscar Sitio:", sorted(df_actual['Sitio'].unique()))
+        st.dataframe(df_actual[df_actual['Sitio'] == s_busq], use_container_width=True)
 
+    # --- PESTAÑA 3: HISTÓRICO ---
     with tab_hist:
-        st.subheader("📈 Gestión de Base de Datos")
+        st.subheader("📈 Gestión Histórica")
         c1, c2 = st.columns(2)
         with c1:
-            num_reportes = st.slider("Archivos a procesar:", 1, len(archivos_lista), min(100, len(archivos_lista)))
-            if st.button("🔥 Reconstruir Base Parquet"):
-                progreso = st.progress(0)
+            n_rep = st.slider("Archivos:", 1, len(archivos_lista), min(100, len(archivos_lista)))
+            if st.button("🔥 Reconstruir Parquet"):
+                prog = st.progress(0)
                 if os.path.exists(PARQUET_FILE): os.remove(PARQUET_FILE)
                 writer = None
                 try:
-                    for i, p in enumerate(archivos_lista[:num_reportes]):
-                        progreso.progress((i + 1) / num_reportes)
+                    for i, p in enumerate(archivos_lista[:n_rep]):
+                        prog.progress((i + 1) / n_rep)
                         data = extraer_datos_masivo(p)
                         if data:
-                            temp_df = pd.DataFrame(data)
-                            temp_df['Slot'] = temp_df['Slot'].astype('int16')
-                            temp_df['Temp'] = temp_df['Temp'].astype('int16')
-                            table = pa.Table.from_pandas(temp_df)
+                            df_t = pd.DataFrame(data)
+                            table = pa.Table.from_pandas(df_t)
                             if writer is None: writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
                             writer.write_table(table)
                         if i % 50 == 0: gc.collect()
@@ -134,52 +144,37 @@ if archivos_lista:
                     if writer: writer.close()
         with c2:
             if os.path.exists(PARQUET_FILE):
-                sitios_disp = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
-                s_h = st.selectbox("Historial de Sitio:", sitios_disp)
-                if s_h:
-                    df_h = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', s_h)])
-                    st.plotly_chart(px.line(df_h, x='Timestamp', y='Temp', color='ID_Full', title=f"Tendencia: {s_h}"), width=None)
+                s_disp = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
+                sh = st.selectbox("Ver Historial de:", s_disp)
+                if sh:
+                    df_h = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sh)])
+                    st.plotly_chart(px.line(df_h, x='Timestamp', y='Temp', color='ID_Full'), use_container_width=True)
 
+    # --- PESTAÑA 4: UPGRADE ---
     with tab_upgrade:
-        st.header("🚀 Análisis de Upgrade (Visión Horaria)")
+        st.header("🚀 Análisis Masivo de Upgrade")
         if os.path.exists(PARQUET_FILE):
-            st.write("Sube un Excel/CSV con una columna llamada **'Sitio'** para cargar los 93 nodos.")
-            subida = st.file_uploader("Cargar lista de sitios:", type=['xlsx', 'csv'])
-            
-            sitios_importados = []
+            subida = st.file_uploader("Cargar lista de sitios (Excel/CSV):", type=['xlsx', 'csv'])
+            sitios_import = []
             if subida:
                 try:
-                    # Usar engine='openpyxl' para evitar el error de la imagen
-                    if subida.name.endswith('.csv'):
-                        df_u = pd.read_csv(subida)
-                    else:
-                        df_u = pd.read_excel(subida, engine='openpyxl')
-                    
+                    # Se intenta usar openpyxl si es Excel
+                    df_u = pd.read_csv(subida) if subida.name.endswith('.csv') else pd.read_excel(subida)
                     if 'Sitio' in df_u.columns:
-                        sitios_importados = df_u['Sitio'].astype(str).str.strip().unique().tolist()
-                        st.success(f"Cargados {len(sitios_importados)} sitios del archivo.")
-                    else: st.error("❌ El archivo no tiene la columna 'Sitio'.")
-                except Exception as e: st.error(f"Error al leer archivo: {e}")
+                        sitios_import = df_u['Sitio'].astype(str).str.strip().unique().tolist()
+                        st.success(f"✅ {len(sitios_import)} sitios cargados.")
+                    else: st.error("❌ Falta columna 'Sitio'.")
+                except Exception as e: st.error(f"Error: {e}")
 
-            todas_opciones = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
-            seleccion = st.multiselect("Verificar sitios a graficar:", todas_opciones, 
-                                      default=[s for s in sitios_importados if s in todas_opciones])
-
-            if seleccion:
-                df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', seleccion)])
-                # Agrupación por Hora y Sitio para la gráfica masiva
-                resumen = df_up.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
-                
-                fig = px.line(resumen, x='Timestamp', y='Temp', color='Sitio', 
-                             title="Evolución Térmica Horaria del Upgrade", markers=True)
-                fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
+            todas = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
+            sel = st.multiselect("Confirmar sitios:", todas, default=[s for s in sitios_import if s in todas])
+            if sel:
+                df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', sel)])
+                res = df_up.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
+                fig = px.line(res, x='Timestamp', y='Temp', color='Sitio', title="Evolución Horaria", markers=True)
+                fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                 st.plotly_chart(fig, use_container_width=True)
-                
-                # Tabla de resumen de los más calientes
-                st.subheader("⚠️ Sitios con mayor temperatura en el grupo")
-                st.dataframe(resumen.sort_values('Temp', ascending=False).head(20), width=None)
-        else:
-            st.info("⚠️ Primero genera la base histórica en la pestaña 'HISTÓRICO'.")
+        else: st.info("Genera el historial primero.")
 
 else:
-    st.warning(f"⚠️ Carpeta '{FOLDER_PATH}' vacía.")
+    st.warning(f"⚠️ Carpeta '{FOLDER_PATH}' sin archivos.")
