@@ -94,13 +94,13 @@ if archivos_lista:
             if not t_crit.empty:
                 st.divider()
                 st.subheader("🚨 Detalle de Sitios Críticos por Slot")
-                col_filt1, col_filt2 = st.columns([1, 2])
-                with col_filt1:
-                    slot_sel = st.selectbox("Filtrar por Slot:", sorted(t_crit['Slot'].unique()))
-                with col_filt2:
-                    df_slot_f = t_crit[t_crit['Slot'] == slot_sel].sort_values('Temp', ascending=False)
-                    st.write(f"Mostrando {len(df_slot_f)} sitios alarmados en el **Slot {slot_sel}**")
-                st.dataframe(df_slot_f[['Sitio', 'Temp', 'ID_Full']], use_container_width=True)
+                c_f1, c_f2 = st.columns([1, 2])
+                with c_f1:
+                    slot_s = st.selectbox("Slot:", sorted(t_crit['Slot'].unique()))
+                with c_f2:
+                    df_s = t_crit[t_crit['Slot'] == slot_s].sort_values('Temp', ascending=False)
+                    st.write(f"Sitios en **Slot {slot_s}**")
+                st.dataframe(df_s[['Sitio', 'Temp', 'ID_Full']], use_container_width=True)
 
     # --- PESTAÑA HISTÓRICO ---
     with tab_hist:
@@ -129,62 +129,77 @@ if archivos_lista:
         with c2:
             if os.path.exists(PARQUET_FILE):
                 sitios_disp = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
-                sitio_h = st.selectbox("🔍 Ver Historial de Sitio:", sitios_disp)
+                sitio_h = st.selectbox("🔍 Historial Individual:", sitios_disp)
                 if sitio_h:
                     df_h = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_h)])
                     ids = sorted(df_h['ID_Full'].unique())
-                    sel_slots = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
+                    sel_slots = st.multiselect("Comparar slots:", ids, default=ids[:2] if ids else [])
                     if sel_slots:
                         fig_h = px.line(df_h[df_h['ID_Full'].isin(sel_slots)], x='Timestamp', y='Temp', color='ID_Full', markers=True)
-                        fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                         st.plotly_chart(fig_h, use_container_width=True)
 
-    # --- PESTAÑA UPGRADE ---
+    # --- PESTAÑA UPGRADE (CON COMPARACIÓN JUEVES 16 15:00) ---
     with tab_upgrade:
-        st.header("🚀 Análisis de Upgrade")
+        st.header("🚀 Análisis de Upgrade (Comparativa Temporal)")
         if os.path.exists(PARQUET_FILE):
-            subida = st.file_uploader("Sube tu lista de sitios (Excel/CSV):", type=['xlsx', 'csv'])
+            # Cargar Base Completa para este análisis
+            df_hist_full = pd.read_parquet(PARQUET_FILE)
+            tiempos_disp = sorted(df_hist_full['Timestamp'].unique(), reverse=True)
+            
+            c_up1, c_up2 = st.columns(2)
+            with c_up1:
+                subida = st.file_uploader("Sube lista de 93 sitios:", type=['xlsx', 'csv'])
+            with c_up2:
+                # SELECTOR PARA EL "ANTES" (Jueves 16 15:00)
+                st.write("🎯 **Punto de Referencia (El 'Antes'):**")
+                referencia = st.selectbox("Selecciona Fecha/Hora de comparación:", tiempos_disp, 
+                                          help="Busca aquí el Jueves 16 a las 15:00")
+
             sitios_import = []
             if subida:
                 try:
                     df_u = pd.read_csv(subida) if subida.name.endswith('.csv') else pd.read_excel(subida)
                     if 'Sitio' in df_u.columns:
                         sitios_import = df_u['Sitio'].astype(str).str.strip().unique().tolist()
-                        st.success(f"✅ Se cargaron {len(sitios_import)} sitios.")
+                        st.success(f"✅ {len(sitios_import)} sitios cargados.")
                 except Exception as e: st.error(f"Error: {e}")
 
-            todas = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
-            sel_final = st.multiselect("Nodos a graficar:", todas, default=[s for s in sitios_import if s in todas])
+            todas = sorted(df_hist_full['Sitio'].unique())
+            sel_final = st.multiselect("Filtrar Nodos:", todas, default=[s for s in sitios_import if s in todas])
             
             if sel_final:
-                df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', sel_final)])
-                # Agrupación horaria (máxima por sitio en cada reporte)
+                df_up = df_hist_full[df_hist_full['Sitio'].isin(sel_final)]
                 res = df_up.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
                 
-                # GRÁFICA
                 fig_up = px.line(res, x='Timestamp', y='Temp', color='Sitio', title="Evolución Horaria", markers=True)
-                fig_up.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+                fig_up.add_vline(x=referencia, line_dash="dot", line_color="orange", annotation_text="Punto Referencia")
                 st.plotly_chart(fig_up, use_container_width=True)
 
-                # --- NUEVA SECCIÓN: DETECCIÓN DE MEJORA TÉRMICA ---
+                # --- CÁLCULO DE MEJORA CONTRA REFERENCIA ---
                 st.divider()
-                st.subheader("📉 Sitios con Mejora Térmica (>10°C)")
+                st.subheader(f"📉 Mejora respecto a: {referencia}")
                 
-                # Calculamos diferencia entre primer y último dato registrado para cada sitio
-                def calcular_delta(group):
-                    group = group.sort_values('Timestamp')
-                    t_inicial = group['Temp'].iloc[0]
-                    t_final = group['Temp'].iloc[-1]
-                    return pd.Series({'T_Inicial': t_inicial, 'T_Final': t_final, 'Mejora': t_inicial - t_final})
+                # Datos en el momento de referencia
+                df_ref = res[res['Timestamp'] == referencia][['Sitio', 'Temp']].rename(columns={'Temp': 'T_Referencia'})
+                # Datos actuales (último reporte)
+                ultimo_ts = res['Timestamp'].max()
+                df_now_up = res[res['Timestamp'] == ultimo_ts][['Sitio', 'Temp']].rename(columns={'Temp': 'T_Actual'})
+                
+                # Unir y calcular
+                df_comparativa = pd.merge(df_ref, df_now_up, on='Sitio')
+                df_comparativa['Mejora'] = df_comparativa['T_Referencia'] - df_comparativa['T_Actual']
+                
+                # Filtrar los de 10 grados o más
+                df_baja_10 = df_comparativa[df_comparativa['Mejora'] >= 10].sort_values('Mejora', ascending=False)
 
-                df_mejora = res.groupby('Sitio').apply(calcular_delta).reset_index()
-                df_filtro_10 = df_mejora[df_mejora['Mejora'] >= 10].sort_values('Mejora', ascending=False)
-
-                if not df_filtro_10.empty:
-                    st.success(f"Se encontraron {len(df_filtro_10)} sitios con una baja mayor a 10°C.")
-                    st.dataframe(df_filtro_10, use_container_width=True)
+                col_res1, col_res2 = st.columns(2)
+                col_res1.metric("Sitios con baja > 10°C", len(df_baja_10))
+                
+                if not df_baja_10.empty:
+                    st.success(f"Listado de sitios que bajaron 10°C o más comparado con el jueves 16:")
+                    st.dataframe(df_baja_10, use_container_width=True)
                 else:
-                    st.info("No se detectaron sitios con una baja superior a 10°C en el periodo seleccionado.")
+                    st.info("No se detectan bajas superiores a 10°C respecto a esa hora.")
 
         else: st.info("Genera el historial primero.")
 
@@ -197,8 +212,8 @@ if archivos_lista:
         else: st.success("✅ Sin alertas.")
 
     with tab_busq:
-        s_busq = st.selectbox("Buscar por Nodo:", sorted(df_actual['Sitio'].unique()))
+        s_busq = st.selectbox("Buscar Nodo:", sorted(df_actual['Sitio'].unique()))
         st.dataframe(df_actual[df_actual['Sitio'] == s_busq], use_container_width=True)
 
 else:
-    st.warning(f"⚠️ No hay archivos en '{FOLDER_PATH}'.")
+    st.warning(f"⚠️ Carpeta '{FOLDER_PATH}' vacía.")
