@@ -91,32 +91,23 @@ if archivos_lista:
             with m4:
                 st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><h1 style="color:#166534; margin:5px 0; font-size:45px;">{len(t_ok)}</h1></div>', unsafe_allow_html=True)
 
-            # DETALLE DE SITIOS POR SLOT (LO QUE FALTABA)
             if not t_crit.empty:
                 st.divider()
                 st.subheader("🚨 Detalle de Sitios Críticos por Slot")
-                
                 col_filt1, col_filt2 = st.columns([1, 2])
                 with col_filt1:
-                    slot_seleccionado = st.selectbox("Filtrar por Slot:", sorted(t_crit['Slot'].unique()))
-                
+                    slot_sel = st.selectbox("Filtrar por Slot:", sorted(t_crit['Slot'].unique()))
                 with col_filt2:
-                    df_slot_f = t_crit[t_crit['Slot'] == slot_seleccionado].sort_values('Temp', ascending=False)
-                    st.write(f"Mostrando {len(df_slot_f)} sitios alarmados en el **Slot {slot_seleccionado}**")
-                
+                    df_slot_f = t_crit[t_crit['Slot'] == slot_sel].sort_values('Temp', ascending=False)
+                    st.write(f"Mostrando {len(df_slot_f)} sitios alarmados en el **Slot {slot_sel}**")
                 st.dataframe(df_slot_f[['Sitio', 'Temp', 'ID_Full']], use_container_width=True)
-
-                st.subheader("🔝 Resumen de Slots más afectados")
-                res_slots = t_crit.groupby('Slot').size().reset_index(name='Cantidad de Sitios').sort_values('Cantidad de Sitios', ascending=False)
-                res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cantidad de Sitios', color='Cantidad de Sitios', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
 
     # --- PESTAÑA HISTÓRICO ---
     with tab_hist:
         st.subheader("📈 Gestión Histórica")
         c1, c2 = st.columns([1, 2])
         with c1:
-            num_reportes = st.slider("Archivos a procesar:", 1, len(archivos_lista), min(100, len(archivos_lista)))
+            num_reportes = st.slider("Archivos:", 1, len(archivos_lista), min(100, len(archivos_lista)))
             if st.button("🔥 Reconstruir Base Parquet"):
                 progreso = st.progress(0)
                 if os.path.exists(PARQUET_FILE): os.remove(PARQUET_FILE)
@@ -137,8 +128,7 @@ if archivos_lista:
                     if writer: writer.close()
         with c2:
             if os.path.exists(PARQUET_FILE):
-                tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
-                sitios_disp = sorted(tabla_sitios.to_pandas()['Sitio'].unique())
+                sitios_disp = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
                 sitio_h = st.selectbox("🔍 Ver Historial de Sitio:", sitios_disp)
                 if sitio_h:
                     df_h = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_h)])
@@ -151,9 +141,9 @@ if archivos_lista:
 
     # --- PESTAÑA UPGRADE ---
     with tab_upgrade:
-        st.header("🚀 Análisis de Upgrade (Filtro Masivo)")
+        st.header("🚀 Análisis de Upgrade")
         if os.path.exists(PARQUET_FILE):
-            subida = st.file_uploader("Sube tu lista de 93 sitios (Excel/CSV):", type=['xlsx', 'csv'])
+            subida = st.file_uploader("Sube tu lista de sitios (Excel/CSV):", type=['xlsx', 'csv'])
             sitios_import = []
             if subida:
                 try:
@@ -165,12 +155,37 @@ if archivos_lista:
 
             todas = sorted(pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()['Sitio'].unique())
             sel_final = st.multiselect("Nodos a graficar:", todas, default=[s for s in sitios_import if s in todas])
+            
             if sel_final:
                 df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', sel_final)])
+                # Agrupación horaria (máxima por sitio en cada reporte)
                 res = df_up.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
-                fig_up = px.line(res, x='Timestamp', y='Temp', color='Sitio', title="Evolución Horaria por Nodo", markers=True)
+                
+                # GRÁFICA
+                fig_up = px.line(res, x='Timestamp', y='Temp', color='Sitio', title="Evolución Horaria", markers=True)
                 fig_up.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                 st.plotly_chart(fig_up, use_container_width=True)
+
+                # --- NUEVA SECCIÓN: DETECCIÓN DE MEJORA TÉRMICA ---
+                st.divider()
+                st.subheader("📉 Sitios con Mejora Térmica (>10°C)")
+                
+                # Calculamos diferencia entre primer y último dato registrado para cada sitio
+                def calcular_delta(group):
+                    group = group.sort_values('Timestamp')
+                    t_inicial = group['Temp'].iloc[0]
+                    t_final = group['Temp'].iloc[-1]
+                    return pd.Series({'T_Inicial': t_inicial, 'T_Final': t_final, 'Mejora': t_inicial - t_final})
+
+                df_mejora = res.groupby('Sitio').apply(calcular_delta).reset_index()
+                df_filtro_10 = df_mejora[df_mejora['Mejora'] >= 10].sort_values('Mejora', ascending=False)
+
+                if not df_filtro_10.empty:
+                    st.success(f"Se encontraron {len(df_filtro_10)} sitios con una baja mayor a 10°C.")
+                    st.dataframe(df_filtro_10, use_container_width=True)
+                else:
+                    st.info("No se detectaron sitios con una baja superior a 10°C en el periodo seleccionado.")
+
         else: st.info("Genera el historial primero.")
 
     # --- OTRAS PESTAÑAS ---
