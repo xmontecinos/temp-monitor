@@ -31,7 +31,7 @@ def extraer_datos_masivo(path):
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
-                # NEName debe ir junto según requerimiento
+                # NEName debe ir junto según requerimiento técnico
                 nombre_sitio = lineas[0].strip().split()[0]
                 
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
@@ -68,7 +68,7 @@ if archivos_lista:
         "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO", "🚀 ANÁLISIS UPGRADE"
     ])
 
-    # --- PESTAÑA DASHBOARD (VISTA ORIGINAL RECUPERADA) ---
+    # --- PESTAÑA DASHBOARD ---
     with tab_dash:
         if not df_actual.empty:
             ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
@@ -91,14 +91,27 @@ if archivos_lista:
             with m4:
                 st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><h1 style="color:#166534; margin:5px 0; font-size:45px;">{len(t_ok)}</h1></div>', unsafe_allow_html=True)
 
+            # DETALLE DE SITIOS POR SLOT (LO QUE FALTABA)
             if not t_crit.empty:
                 st.divider()
-                st.subheader("🔝 Top Slots Críticos")
-                res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant').sort_values('Cant', ascending=False).head(10)
-                res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
+                st.subheader("🚨 Detalle de Sitios Críticos por Slot")
+                
+                col_filt1, col_filt2 = st.columns([1, 2])
+                with col_filt1:
+                    slot_seleccionado = st.selectbox("Filtrar por Slot:", sorted(t_crit['Slot'].unique()))
+                
+                with col_filt2:
+                    df_slot_f = t_crit[t_crit['Slot'] == slot_seleccionado].sort_values('Temp', ascending=False)
+                    st.write(f"Mostrando {len(df_slot_f)} sitios alarmados en el **Slot {slot_seleccionado}**")
+                
+                st.dataframe(df_slot_f[['Sitio', 'Temp', 'ID_Full']], use_container_width=True)
 
-    # --- PESTAÑA HISTÓRICO (VISTA ORIGINAL RECUPERADA) ---
+                st.subheader("🔝 Resumen de Slots más afectados")
+                res_slots = t_crit.groupby('Slot').size().reset_index(name='Cantidad de Sitios').sort_values('Cantidad de Sitios', ascending=False)
+                res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
+                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cantidad de Sitios', color='Cantidad de Sitios', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
+
+    # --- PESTAÑA HISTÓRICO ---
     with tab_hist:
         st.subheader("📈 Gestión Histórica")
         c1, c2 = st.columns([1, 2])
@@ -124,22 +137,19 @@ if archivos_lista:
                     if writer: writer.close()
         with c2:
             if os.path.exists(PARQUET_FILE):
-                try:
-                    tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
-                    sitios_disp = sorted(tabla_sitios.to_pandas()['Sitio'].unique())
-                    sitio_h = st.selectbox("🔍 Ver Historial de Sitio:", sitios_disp)
-                    if sitio_h:
-                        df_h = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_h)])
-                        ids = sorted(df_h['ID_Full'].unique())
-                        # Recuperamos el comparador de slots que tenías en app (8)
-                        sel_slots = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
-                        if sel_slots:
-                            fig_h = px.line(df_h[df_h['ID_Full'].isin(sel_slots)], x='Timestamp', y='Temp', color='ID_Full', markers=True)
-                            fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
-                            st.plotly_chart(fig_h, use_container_width=True)
-                except Exception as e: st.error(f"Error al cargar: {e}")
+                tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
+                sitios_disp = sorted(tabla_sitios.to_pandas()['Sitio'].unique())
+                sitio_h = st.selectbox("🔍 Ver Historial de Sitio:", sitios_disp)
+                if sitio_h:
+                    df_h = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_h)])
+                    ids = sorted(df_h['ID_Full'].unique())
+                    sel_slots = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
+                    if sel_slots:
+                        fig_h = px.line(df_h[df_h['ID_Full'].isin(sel_slots)], x='Timestamp', y='Temp', color='ID_Full', markers=True)
+                        fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+                        st.plotly_chart(fig_h, use_container_width=True)
 
-    # --- PESTAÑA UPGRADE (VISTA HORARIA NUEVA) ---
+    # --- PESTAÑA UPGRADE ---
     with tab_upgrade:
         st.header("🚀 Análisis de Upgrade (Filtro Masivo)")
         if os.path.exists(PARQUET_FILE):
@@ -167,7 +177,7 @@ if archivos_lista:
     with tab_alertas:
         crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
         if not crit_all.empty:
-            st.error(f"⚠️ {len(crit_all)} slots críticos.")
+            st.error(f"⚠️ {len(crit_all)} registros críticos.")
             st.dataframe(crit_all[['Sitio', 'Slot', 'Temp']].sort_values('Temp', ascending=False), use_container_width=True)
         else: st.success("✅ Sin alertas.")
 
