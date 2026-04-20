@@ -31,6 +31,7 @@ def extraer_datos_masivo(path):
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
+                # NEName debe ir junto según requerimiento técnico
                 nombre_sitio = lineas[0].strip().split()[0]
                 
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
@@ -69,11 +70,12 @@ if archivos_lista:
     
     df_actual = st.session_state["df_now"]
 
-  tab_dash, tab_alertas, tab_busq, tab_hist, tab_upgrade = st.tabs([
-    "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO", "🚀 ANÁLISIS UPGRADE"
-])
+    # Definición de pestañas incluyendo el análisis de Upgrade
+    tab_dash, tab_alertas, tab_busq, tab_hist, tab_upgrade = st.tabs([
+        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO", "🚀 ANÁLISIS UPGRADE"
+    ])
 
-   # --- PESTAÑA 0: DASHBOARD ---
+    # --- PESTAÑA 0: DASHBOARD ---
     with tab_dash:
         if not df_actual.empty:
             ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
@@ -118,78 +120,7 @@ if archivos_lista:
                 st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
                 st.dataframe(df_foco, use_container_width=True, hide_index=True)
 
-   # --- PESTAÑA 3: HISTÓRICO (CORREGIDO) ---
-    with tab_hist:
-        st.subheader("📈 Gestión Histórica de Gran Volumen")
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            num_reportes = st.slider("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
-            reconstruir = st.button("🔥 Reconstruir Base Parquet (Modo PyArrow)")
-            
-            if reconstruir:
-                progreso_bar = st.progress(0)
-                texto_estado = st.empty()
-                
-                if os.path.exists(PARQUET_FILE):
-                    os.remove(PARQUET_FILE)
-
-                writer = None
-                try:
-                    for i, p in enumerate(archivos_lista[:num_reportes]):
-                        texto_estado.text(f"Procesando {i+1}/{num_reportes}: {os.path.basename(p)}")
-                        progreso_bar.progress((i + 1) / num_reportes)
-                        
-                        data = extraer_datos_masivo(p)
-                        if data:
-                            temp_df = pd.DataFrame(data)
-                            temp_df['Slot'] = temp_df['Slot'].astype('int16')
-                            temp_df['Temp'] = temp_df['Temp'].astype('int16')
-                            
-                            temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])[['Temp', 'Slot']].max().reset_index()
-                            
-                            table = pa.Table.from_pandas(temp_df)
-                            if writer is None:
-                                writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
-                            writer.write_table(table)
-                        
-                        if i % 25 == 0:
-                            gc.collect()
-                    
-                    texto_estado.success(f"✅ ¡Base Parquet generada!")
-                    st.rerun() # Refresca para que aparezca el buscador
-                
-                except Exception as e:
-                    st.error(f"Error crítico: {e}")
-                finally:
-                    if writer:
-                        writer.close()
-
-        with c2:
-            if os.path.exists(PARQUET_FILE):
-                try:
-                    # Leemos solo la columna de sitios para no saturar RAM
-                    tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
-                    sitios_disponibles = tabla_sitios.to_pandas()['Sitio'].unique()
-                    sitio_sel = st.selectbox("🔍 Buscar Sitio en Historial:", sorted(sitios_disponibles))
-                    
-                    if sitio_sel:
-                        df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
-                        ids = sorted(df_s['ID_Full'].unique())
-                        sel = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
-                        
-                        if sel:
-                            fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
-                                         x='Timestamp', y='Temp', color='ID_Full', markers=True,
-                                         title=f"Evolución Térmica: {sitio_sel}")
-                            fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
-                            st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Error al cargar historial: {e}")
-            else: 
-                st.info("Aún no has generado la base histórica.")
-
-    # --- OTRAS PESTAÑAS ---
+    # --- PESTAÑA 1: ALERTAS ACTUALES ---
     with tab_alertas:
         crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
         if not crit_all.empty:
@@ -197,73 +128,83 @@ if archivos_lista:
             st.dataframe(crit_all[['Sitio', 'Slot', 'Temp']].sort_values('Temp', ascending=False), use_container_width=True)
         else: st.success("✅ Todo OK.")
 
+    # --- PESTAÑA 2: BUSCADOR ---
     with tab_busq:
         s_busq = st.selectbox("Buscar por Sitio:", sorted(df_actual['Sitio'].unique()))
         st.dataframe(df_actual[df_actual['Sitio'] == s_busq], use_container_width=True)
 
-else:
-    st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
+    # --- PESTAÑA 3: HISTÓRICO ---
+    with tab_hist:
+        st.subheader("📈 Gestión Histórica")
+        c1, c2 = st.columns(2)
+        
+        with c1:
+            num_reportes = st.slider("Archivos a procesar:", 1, len(archivos_lista), min(50, len(archivos_lista)))
+            reconstruir = st.button("🔥 Reconstruir Base Parquet")
+            
+            if reconstruir:
+                progreso_bar = st.progress(0)
+                if os.path.exists(PARQUET_FILE): os.remove(PARQUET_FILE)
+                writer = None
+                try:
+                    for i, p in enumerate(archivos_lista[:num_reportes]):
+                        progreso_bar.progress((i + 1) / num_reportes)
+                        data = extraer_datos_masivo(p)
+                        if data:
+                            temp_df = pd.DataFrame(data)
+                            # Optimización de tipos de datos para Parquet
+                            temp_df['Slot'] = temp_df['Slot'].astype('int16')
+                            temp_df['Temp'] = temp_df['Temp'].astype('int16')
+                            table = pa.Table.from_pandas(temp_df)
+                            if writer is None: writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
+                            writer.write_table(table)
+                        if i % 25 == 0: gc.collect()
+                    st.success("✅ Base Histórica Actualizada")
+                    st.rerun()
+                except Exception as e: st.error(f"Error: {e}")
+                finally: 
+                    if writer: writer.close()
 
-# --- PESTAÑA 4: ANÁLISIS UPGRADE (NUEVA) ---
-with tab_upgrade:
-    st.header("🚀 Seguimiento Térmico - Grupos de Upgrade")
-    
-    if os.path.exists(PARQUET_FILE):
-        try:
-            # 1. Cargar lista de sitios disponibles
-            tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
-            sitios_disponibles = sorted(tabla_sitios.to_pandas()['Sitio'].unique())
-            
-            # 2. Selección de sitios (puedes pegar los 93 nombres aquí)
-            sitios_sel = st.multiselect(
-                "Selecciona los sitios actualizados para comparar:", 
-                options=sitios_disponibles,
-                help="Puedes seleccionar múltiples sitios para ver cómo evolucionó su temperatura tras el upgrade."
-            )
-            
-            if sitios_sel:
-                # 3. Filtrado eficiente de la base histórica
-                df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', sitios_sel)])
+        with c2:
+            if os.path.exists(PARQUET_FILE):
+                tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
+                sitios_disp = sorted(tabla_sitios.to_pandas()['Sitio'].unique())
+                sitio_h = st.selectbox("🔍 Ver Historial de Sitio:", sitios_disp)
+                if sitio_h:
+                    df_h = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_h)])
+                    fig_h = px.line(df_h, x='Timestamp', y='Temp', color='ID_Full', title=f"Evolución: {sitio_h}")
+                    st.plotly_chart(fig_h, use_container_width=True)
+
+    # --- PESTAÑA 4: ANÁLISIS UPGRADE (LA QUE NECESITABAS) ---
+    with tab_upgrade:
+        st.header("🚀 Seguimiento Térmico - Grupos de Upgrade")
+        if os.path.exists(PARQUET_FILE):
+            try:
+                # Cargar sitios para el multiselect
+                tabla_up = pq.read_table(PARQUET_FILE, columns=['Sitio'])
+                sitios_disponibles = sorted(tabla_up.to_pandas()['Sitio'].unique())
                 
-                c1, c2 = st.columns([3, 1])
+                sitios_sel = st.multiselect("Selecciona los sitios del Upgrade (puedes elegir los 93):", sitios_disponibles)
                 
-                with c1:
-                    # Agregamos por día y sitio para ver tendencias claras
+                if sitios_sel:
+                    df_up = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', 'in', sitios_sel)])
+                    
+                    # Gráfico de tendencia por día para reducir ruido visual
                     df_up['Fecha'] = df_up['Timestamp'].dt.date
                     resumen_up = df_up.groupby(['Fecha', 'Sitio'])['Temp'].max().reset_index()
                     
-                    fig_up = px.line(
-                        resumen_up, 
-                        x='Fecha', 
-                        y='Temp', 
-                        color='Sitio',
-                        title=f"Tendencia Térmica Máxima: {len(sitios_sel)} Sitios Seleccionados",
-                        markers=True
-                    )
+                    fig_up = px.line(resumen_up, x='Fecha', y='Temp', color='Sitio', 
+                                    title="Evolución de Temperatura Máxima por Sitio", markers=True)
                     
-                    # Líneas de referencia
-                    fig_up.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red", annotation_text="CRÍTICO")
-                    fig_up.add_hline(y=UMBRAL_PREVENTIVO, line_dash="dot", line_color="orange", annotation_text="PREVENTIVO")
-                    
+                    fig_up.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                     st.plotly_chart(fig_up, use_container_width=True)
-
-                with c2:
-                    st.subheader("Resumen de Grupo")
-                    avg_temp = df_up['Temp'].mean()
-                    max_temp = df_up['Temp'].max()
                     
-                    st.metric("Temp. Promedio Grupo", f"{avg_temp:.1f}°C")
-                    st.metric("Temp. Máxima Detectada", f"{max_temp}°C")
-                    
-                    # Mostrar tabla con los que siguen por encima del umbral
-                    st.write("🔴 **Sitios aún Críticos:**")
-                    s_siguen_mal = df_up[df_up['Temp'] >= UMBRAL_CRITICO]['Sitio'].unique()
-                    if len(s_siguen_mal) > 0:
-                        st.write(s_siguen_mal)
-                    else:
-                        st.success("Ningún sitio del grupo está en crítico actualmente.")
+                    # Tabla de los que aún están calientes
+                    st.subheader("⚠️ Sitios que persisten con alta temperatura")
+                    s_mal = df_up[df_up['Temp'] >= UMBRAL_PREVENTIVO].groupby('Sitio')['Temp'].max().reset_index()
+                    st.dataframe(s_mal.sort_values('Temp', ascending=False), use_container_width=True)
+            except Exception as e: st.error(f"Error en Upgrade: {e}")
+        else: st.info("Genera la base histórica primero.")
 
-        except Exception as e:
-            st.error(f"Error al cargar datos de upgrade: {e}")
-    else:
-        st.info("Primero debes generar la base histórica en la pestaña 'HISTÓRICO'.")
+else:
+    st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
