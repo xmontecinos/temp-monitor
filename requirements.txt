@@ -1,5 +1,5 @@
-openpyxl
+streamlit
 pandas
 plotly
+openpyxl
 pyarrow
-streamlit
