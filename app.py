@@ -8,32 +8,33 @@ from io import BytesIO
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# 1. CONFIGURACIÓN INICIAL
-st.set_page_config(page_title="Monitor Huawei Network - Pro", layout="wide")
+# 1. CONFIGURACIÓN DE PÁGINA
+st.set_page_config(page_title="Monitor Huawei - Sistema Integrado", layout="wide")
 
+# CONFIGURACIÓN DE RUTAS Y UMBRALES
+FOLDER_PATH = 'Temperatura'
+PARQUET_FILE = 'base_v2.parquet' # Usamos V2 para evitar bloqueos de archivos anteriores
 UMBRAL_CRITICO = 78 
 UMBRAL_PREVENTIVO = 65
-FOLDER_PATH = 'Temperatura'
-PARQUET_FILE = 'base_historica.parquet'
 
-# --- MOTOR DE EXTRACCIÓN DE ALTO RENDIMIENTO ---
+# --- MOTOR DE EXTRACCIÓN (NEName junto, Board Type con espacio) ---
 def extraer_datos_unidad(path):
     rows = []
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
-            # Buscar Timestamp
+            # Captura de Timestamp
             ts_match = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', content)
             if not ts_match: return None
             ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
             
-            # Separar por NE Name
+            # Separación por NE Name
             bloques = re.split(r'NE Name\s*:\s*', content)
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
                 
-                # Requerimiento: NEName debe ir junto
+                # Requerimiento: NEName debe ir junto (ej: Site_A)
                 sitio = lineas[0].strip().split()[0]
                 
                 # Regex para capturar Board Type, Slot y Temp
@@ -49,7 +50,6 @@ def extraer_datos_unidad(path):
     except: return None
     return pd.DataFrame(rows)
 
-# Función de descarga segura (usa openpyxl por defecto)
 def preparar_excel(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
@@ -65,25 +65,25 @@ def listar_archivos(folder):
     fs.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
     return fs
 
-# --- PROCESAMIENTO ---
+# --- INICIO DE LÓGICA ---
 archivos_lista = listar_archivos(FOLDER_PATH)
 
 if archivos_lista:
-    # Cargar reporte actual para el Dashboard
+    # Carga rápida para el estado actual
     if "df_now" not in st.session_state:
         st.session_state["df_now"] = extraer_datos_unidad(archivos_lista[0])
     
     df_actual = st.session_state["df_now"]
     
     tab_dash, tab_busq, tab_hist, tab_upgrade = st.tabs([
-        "📊 DASHBOARD", "🔍 BUSCADOR", "📈 HISTÓRICO MASIVO", "🚀 UPGRADE"
+        "📊 DASHBOARD", "🔍 BUSCADOR", "📈 HISTÓRICO (+300)", "🚀 UPGRADE"
     ])
 
     # --- PESTAÑA 1: DASHBOARD ---
     with tab_dash:
         if df_actual is not None:
-            st.title("📊 Estado de Red Actual")
-            st.info(f"🕒 Horario del Reporte: {df_actual['Timestamp'].max()}")
+            st.title("📊 Estado Actual de la Red")
+            st.info(f"🕒 Reporte procesado: {df_actual['Timestamp'].max()}")
             
             t_crit = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
             t_prev = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
@@ -97,76 +97,90 @@ if archivos_lista:
 
             if not t_crit.empty:
                 st.divider()
-                st.subheader("🚨 Detalle de Fallas Críticas")
+                st.subheader("🚨 Detalle de Alertas Críticas")
                 st.dataframe(t_crit.sort_values('Temp', ascending=False), use_container_width=True)
-                # Descarga segura
-                st.download_button("📥 Descargar Críticos (Excel)", preparar_excel(t_crit), "criticos_actual.xlsx")
+                st.download_button("📥 Exportar Críticos a Excel", preparar_excel(t_crit), "alertas_criticas.xlsx")
 
     # --- PESTAÑA 2: BUSCADOR ---
     with tab_busq:
         if df_actual is not None:
-            st.subheader("🔍 Localizador de Nodo")
-            sitio_sel = st.selectbox("Seleccione Sitio:", sorted(df_actual['Sitio'].unique()))
-            st.dataframe(df_actual[df_actual['Sitio'] == sitio_sel], use_container_width=True)
+            st.subheader("🔍 Consultar Nodo Específico")
+            busqueda = st.selectbox("Seleccione el sitio:", sorted(df_actual['Sitio'].unique()))
+            st.dataframe(df_actual[df_actual['Sitio'] == busqueda], use_container_width=True)
 
-    # --- PESTAÑA 3: HISTÓRICO (SOLUCIÓN +300 ARCHIVOS) ---
+    # --- PESTAÑA 3: HISTÓRICO (PROCESAMIENTO SEGURO) ---
     with tab_hist:
-        st.subheader("📈 Procesamiento Masivo")
-        col_c1, col_c2 = st.columns([1, 2])
+        st.subheader("📈 Reconstrucción de Historial Masivo")
+        col1, col2 = st.columns([1, 2])
         
-        with col_c1:
-            n_archivos = st.number_input("Cantidad de archivos:", 1, len(archivos_lista), len(archivos_lista))
-            if st.button("🔥 RECONSTRUIR BASE PARQUET"):
-                if os.path.exists(PARQUET_FILE): os.remove(PARQUET_FILE)
+        with col1:
+            n = st.number_input("Archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
+            if st.button("🔥 RECONSTRUIR BASE V2"):
+                if os.path.exists(PARQUET_FILE):
+                    os.remove(PARQUET_FILE)
+                
                 writer = None
-                p_bar = st.progress(0)
-                status = st.empty()
+                progreso = st.progress(0)
+                status_msg = st.empty()
                 
                 try:
-                    for i, p in enumerate(archivos_lista[:n_archivos]):
-                        status.text(f"Procesando: {os.path.basename(p)}")
+                    for i, p in enumerate(archivos_lista[:n]):
+                        status_msg.text(f"Procesando: {os.path.basename(p)}")
                         df_tmp = extraer_datos_unidad(p)
+                        
                         if df_tmp is not None and not df_tmp.empty:
+                            # Tipos de datos eficientes para evitar llenar la RAM
+                            df_tmp['Slot'] = df_tmp['Slot'].astype('int16')
+                            df_tmp['Temp'] = df_tmp['Temp'].astype('int16')
+                            
                             table = pa.Table.from_pandas(df_tmp)
                             if writer is None:
                                 writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
                             writer.write_table(table)
                         
                         if i % 20 == 0:
-                            p_bar.progress((i+1)/n_archivos)
-                            gc.collect() # LIBERA RAM
+                            progreso.progress((i+1)/n)
+                            gc.collect()
                     
                     if writer:
                         writer.close()
-                        st.success("✅ Base reconstruida con éxito."); st.rerun()
+                        st.success("✅ Base histórica V2 generada correctamente.")
+                        st.rerun()
                 except Exception as e:
-                    st.error(f"Error: {e}")
+                    st.error(f"Error en procesamiento: {e}")
 
-        with col_c2:
-            if os.path.exists(PARQUET_FILE) and os.path.getsize(PARQUET_FILE) > 0:
+        with col2:
+            if os.path.exists(PARQUET_FILE) and os.path.getsize(PARQUET_FILE) > 500:
                 df_h = pd.read_parquet(PARQUET_FILE)
-                sh = st.selectbox("Historial Nodo:", sorted(df_h['Sitio'].unique()))
-                fig = px.line(df_h[df_h['Sitio'] == sh], x='Timestamp', y='Temp', color='ID_Full')
+                sel_h = st.selectbox("Elegir Sitio para tendencia:", sorted(df_h['Sitio'].unique()))
+                fig = px.line(df_h[df_h['Sitio'] == sel_h], x='Timestamp', y='Temp', color='ID_Full', markers=True)
+                fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                 st.plotly_chart(fig, use_container_width=True)
 
     # --- PESTAÑA 4: UPGRADE ---
     with tab_upgrade:
-        st.header("🚀 Análisis de Upgrade")
+        st.header("🚀 Comparativa de Upgrade")
         if os.path.exists(PARQUET_FILE):
             df_full = pd.read_parquet(PARQUET_FILE)
             tiempos = sorted(df_full['Timestamp'].unique(), reverse=True)
-            u1, u2 = st.columns(2)
-            with u1: f_up = st.file_uploader("Subir lista sitios (xlsx/csv):", type=['xlsx', 'csv'])
-            with u2:
-                ref_sel = st.selectbox("🎯 Referencia (Antes):", tiempos, format_func=lambda x: x.strftime('%Y-%m-%d %H:%M'))
+            cu1, cu2 = st.columns(2)
+            with cu1: 
+                f_up = st.file_uploader("Subir Excel/CSV con columna 'Sitio':", type=['xlsx', 'csv'])
+            with cu2:
+                ref = st.selectbox("🎯 Punto de Referencia (Fecha Upgrade):", tiempos, format_func=lambda x: x.strftime('%Y-%m-%d %H:%M'))
             
             if f_up:
                 df_l = pd.read_csv(f_up) if f_up.name.endswith('.csv') else pd.read_excel(f_up)
-                sitios_up = df_l['Sitio'].astype(str).str.strip().tolist()
-                res_up = df_full[df_full['Sitio'].isin(sitios_up)].groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
-                fig_u = px.line(res_up, x='Timestamp', y='Temp', color='Sitio')
-                # Parche de tiempo para evitar error Plotly
-                fig_u.add_vline(x=pd.Timestamp(ref_sel).timestamp() * 1000, line_dash="dash", line_color="orange")
-                st.plotly_chart(fig_u, use_container_width=True)
+                lista_sitios = df_l['Sitio'].astype(str).str.strip().tolist()
+                df_filtrado = df_full[df_full['Sitio'].isin(lista_sitios)]
+                
+                if not df_filtrado.empty:
+                    res = df_filtrado.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
+                    fig_u = px.line(res, x='Timestamp', y='Temp', color='Sitio', title="Evolución de Sitios Upgrade")
+                    # Corrección del error de vline usando timestamp en milisegundos
+                    fig_u.add_vline(x=pd.Timestamp(ref).timestamp() * 1000, line_dash="dash", line_color="orange")
+                    st.plotly_chart(fig_u, use_container_width=True)
+                else:
+                    st.warning("No se encontraron coincidencias para los sitios cargados.")
 else:
-    st.warning("No hay archivos .txt en 'Temperatura'.")
+    st.warning("No se detectaron archivos .txt en la carpeta 'Temperatura'.")
