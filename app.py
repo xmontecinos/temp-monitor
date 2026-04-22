@@ -8,15 +8,15 @@ from io import BytesIO
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="Monitor Huawei - Estable", layout="wide")
+# 1. CONFIGURACIÓN INICIAL
+st.set_page_config(page_title="Monitor Huawei Network", layout="wide")
 
-# Rutas y archivos
+# Configuración de rutas
 FOLDER_PATH = 'Temperatura'
 PARQUET_FILE = 'base_v4_pro.parquet'
 UMBRAL_CRITICO = 78
 
-# --- MOTOR DE EXTRACCIÓN MEJORADO ---
+# --- FUNCIONES CORE ---
 def extraer_datos_unidad(path):
     rows = []
     try:
@@ -30,7 +30,7 @@ def extraer_datos_unidad(path):
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
-                # NEName junto sin espacios
+                # Requerimiento: NEName junto
                 sitio = lineas[0].strip().split()[0]
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
                 for r in filas:
@@ -41,67 +41,92 @@ def extraer_datos_unidad(path):
     except: return None
     return pd.DataFrame(rows)
 
-# Listar archivos
-if not os.path.exists(FOLDER_PATH): os.makedirs(FOLDER_PATH, exist_ok=True)
+def preparar_excel(df):
+    output = BytesIO()
+    # Usamos openpyxl explícitamente para evitar ModuleNotFoundError
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
+
+# Asegurar directorios
+if not os.path.exists(FOLDER_PATH):
+    os.makedirs(FOLDER_PATH, exist_ok=True)
+
+# Lista de archivos .txt
 archivos_lista = [os.path.join(FOLDER_PATH, f) for f in os.listdir(FOLDER_PATH) if f.endswith(".txt")]
-archivos_lista.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
+archivos_lista.sort(reverse=True)
 
 # --- INTERFAZ ---
-tab1, tab2 = st.tabs(["🚀 GENERAR BASE", "📊 TENDENCIAS"])
+st.title("🌡️ Monitor Térmico de Red")
 
-with tab1:
-    st.header("Generador de Histórico")
-    n = st.number_input("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
-    
-    if st.button("🔥 INICIAR PROCESAMIENTO"):
-        # PASO CRÍTICO: Borrar archivo viejo si existe para evitar conflictos de "Magic Bytes"
-        if os.path.exists(PARQUET_FILE):
-            try:
-                os.remove(PARQUET_FILE)
-                st.write("🗑️ Archivo anterior eliminado.")
-            except: pass
-            
-        writer = None
-        p_bar = st.progress(0)
-        status = st.empty()
-        
-        try:
-            for i, path in enumerate(archivos_lista[:n]):
-                status.text(f"Procesando {i+1}/{n}: {os.path.basename(path)}")
-                df_tmp = extraer_datos_unidad(path)
-                
-                if df_tmp is not None and not df_tmp.empty:
-                    # Optimización de memoria: convertir tipos
-                    df_tmp['Slot'] = df_tmp['Slot'].astype('int16')
-                    df_tmp['Temp'] = df_tmp['Temp'].astype('int16')
-                    
-                    table = pa.Table.from_pandas(df_tmp)
-                    if writer is None:
-                        # Creamos el archivo Parquet físicamente en el disco
-                        writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
-                    writer.write_table(table)
-                
-                # Cada 20 archivos liberamos la memoria RAM manualmente
-                if i % 20 == 0:
-                    p_bar.progress((i+1)/n)
-                    gc.collect()
-            
-            if writer:
-                writer.close()
-                st.success(f"✅ ¡Éxito! Se creó '{PARQUET_FILE}'.")
-                st.info(f"Tamaño: {os.path.getsize(PARQUET_FILE) / 1024:.2f} KB")
-                st.rerun()
-            else:
-                st.error("No se pudieron extraer datos de los archivos.")
-        except Exception as e:
-            st.error(f"🚨 Error en el servidor: {e}")
+tab_dash, tab_hist, tab_up = st.tabs(["📊 DASHBOARD", "📈 HISTÓRICO MASIVO", "🚀 UPGRADE"])
 
-with tab2:
-    if os.path.exists(PARQUET_FILE) and os.path.getsize(PARQUET_FILE) > 100:
-        df_h = pd.read_parquet(PARQUET_FILE)
-        st.write(f"Datos cargados: {len(df_h)} registros.")
-        nodo = st.selectbox("Sitio:", sorted(df_h['Sitio'].unique()))
-        fig = px.line(df_h[df_h['Sitio'] == nodo], x='Timestamp', y='Temp', color='ID_Full')
-        st.plotly_chart(fig, use_container_width=True)
+with tab_dash:
+    if archivos_lista:
+        df_now = extraer_datos_unidad(archivos_lista[0])
+        if df_now is not None:
+            t_crit = df_now[df_now['Temp'] >= UMBRAL_CRITICO]
+            c1, c2 = st.columns(2)
+            c1.metric("Total Tarjetas", len(df_now))
+            c2.metric("Nodos Críticos", len(t_crit))
+            
+            if not t_crit.empty:
+                st.subheader("🚨 Detalle de Alertas")
+                st.dataframe(t_crit, use_container_width=True)
+                st.download_button("📥 Descargar Críticos (Excel)", preparar_excel(t_crit), "criticos.xlsx")
     else:
-        st.warning("⚠️ La base de datos no existe. Ve a la pestaña 'GENERAR BASE'.")
+        st.warning("No se encontraron archivos .txt en la carpeta 'Temperatura'.")
+
+with tab_hist:
+    st.header("Gestión de Datos Históricos")
+    col_a, col_b = st.columns([1, 2])
+    
+    with col_a:
+        n = st.number_input("Archivos a procesar:", 1, len(archivos_lista) if archivos_lista else 1, len(archivos_lista) if archivos_lista else 1)
+        if st.button("🔥 GENERAR BASE DE DATOS"):
+            if os.path.exists(PARQUET_FILE):
+                os.remove(PARQUET_FILE)
+            
+            writer = None
+            bar = st.progress(0)
+            status = st.empty()
+            
+            try:
+                for i, path in enumerate(archivos_lista[:n]):
+                    status.text(f"Procesando: {os.path.basename(path)}")
+                    df_tmp = extraer_datos_unidad(path)
+                    if df_tmp is not None and not df_tmp.empty:
+                        table = pa.Table.from_pandas(df_tmp)
+                        if writer is None:
+                            writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
+                        writer.write_table(table)
+                    
+                    if i % 20 == 0:
+                        bar.progress((i+1)/n)
+                        gc.collect()
+                
+                if writer:
+                    writer.close()
+                    st.success("✅ Base generada correctamente.")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    with col_b:
+        if os.path.exists(PARQUET_FILE) and os.path.getsize(PARQUET_FILE) > 100:
+            df_h = pd.read_parquet(PARQUET_FILE)
+            sitio_sel = st.selectbox("Seleccione Sitio:", sorted(df_h['Sitio'].unique()))
+            fig = px.line(df_h[df_h['Sitio'] == sitio_sel], x='Timestamp', y='Temp', color='ID_Full')
+            fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+            st.plotly_chart(fig, use_container_width=True)
+
+with tab_up:
+    st.subheader("Análisis de Upgrade")
+    f_up = st.file_uploader("Cargar lista de sitios (xlsx/csv):", type=['xlsx', 'csv'])
+    if f_up and os.path.exists(PARQUET_FILE):
+        df_full = pd.read_parquet(PARQUET_FILE)
+        df_l = pd.read_csv(f_up) if f_up.name.endswith('.csv') else pd.read_excel(f_up)
+        sitios = df_l['Sitio'].astype(str).str.strip().tolist()
+        res = df_full[df_full['Sitio'].isin(sitios)].groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
+        fig_u = px.line(res, x='Timestamp', y='Temp', color='Sitio')
+        st.plotly_chart(fig_u, use_container_width=True)
