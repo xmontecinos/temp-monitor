@@ -8,198 +8,135 @@ from io import BytesIO
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="Monitor Red - Huawei", layout="wide")
+# 1. CONFIGURACIÓN
+st.set_page_config(page_title="Monitor Red Huawei - Estable", layout="wide")
 
-# UMBRALES
 UMBRAL_CRITICO = 78 
 UMBRAL_PREVENTIVO = 65
 FOLDER_PATH = 'Temperatura'
 PARQUET_FILE = 'base_historica.parquet'
 
-# --- FUNCIONES DE EXTRACCIÓN ---
-def extraer_datos_masivo(path):
+# --- MOTOR DE EXTRACCIÓN MEJORADO ---
+def extraer_datos_unidad(path):
     rows = []
     try:
         with open(path, 'r', encoding='latin-1', errors='ignore') as f:
             content = f.read()
             ts_match = re.search(r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', content)
-            if not ts_match: return []
+            if not ts_match: return None
             ts = pd.to_datetime(f"{ts_match.group(1)} {ts_match.group(2)}")
             
             bloques = re.split(r'NE Name\s*:\s*', content)
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
-                nombre_sitio = lineas[0].strip().split()[0]
-                
+                # NEName junto sin espacios
+                sitio = lineas[0].strip().split()[0]
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
                 for r in filas:
                     rows.append({
-                        "Timestamp": ts, 
-                        "Sitio": nombre_sitio, 
-                        "Slot": int(r[1]),
-                        "Temp": int(r[2]), 
-                        "ID_Full": f"{nombre_sitio} (S:{r[0]}-L:{r[1]})"
+                        "Timestamp": ts, "Sitio": sitio, "Slot": int(r[1]),
+                        "Temp": int(r[2]), "ID_Full": f"{sitio} (S:{r[0]}-L:{r[1]})"
                     })
-    except Exception: pass
-    return rows
+    except: return None
+    return pd.DataFrame(rows)
+
+# Función de descarga corregida (usa el motor predeterminado de pandas)
+def preparar_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    return output.getvalue()
 
 @st.cache_data(ttl=60)
 def listar_archivos(folder):
     if not os.path.exists(folder): 
         os.makedirs(folder, exist_ok=True)
         return []
-    fs = [os.path.join(folder, f) for f in os.listdir(folder) if ".txt" in f]
+    fs = [os.path.join(folder, f) for f in os.listdir(folder) if f.endswith(".txt")]
     fs.sort(key=lambda x: "".join(re.findall(r'\d+', x)), reverse=True)
     return fs
 
-def to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Datos')
-    return output.getvalue()
-
-# --- PROCESAMIENTO INICIAL ---
+# --- INICIO APP ---
 archivos_lista = listar_archivos(FOLDER_PATH)
 
 if archivos_lista:
     if "df_now" not in st.session_state:
-        st.session_state["df_now"] = pd.DataFrame(extraer_datos_masivo(archivos_lista[0]))
+        st.session_state["df_now"] = extraer_datos_unidad(archivos_lista[0])
     
     df_actual = st.session_state["df_now"]
+    t1, t2, t3, t4 = st.tabs(["📊 DASHBOARD", "🔍 BUSCADOR", "📈 HISTÓRICO", "🚀 UPGRADE"])
 
-    tab_dash, tab_alertas, tab_busq, tab_hist = st.tabs([
-        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"
-    ])
-
-   # --- PESTAÑA 0: DASHBOARD ---
-    with tab_dash:
-        if not df_actual.empty:
-            ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
-            total_sitios_red = df_actual['Sitio'].nunique()
-            
-            st.title("📊 Monitor de Salud de Red")
-            
-            c_info1, c_info2 = st.columns(2)
-            c_info1.info(f"🕒 **Horario del Reporte:** {ultima_hora}")
-            c_info2.success(f"📍 **Sitios Registrados en este Reporte:** {total_sitios_red}")
-
-            df_sitios_max = df_actual.groupby('Sitio')['Temp'].max().reset_index()
-            s_crit = df_sitios_max[df_sitios_max['Temp'] >= UMBRAL_CRITICO]
-            s_prev = df_sitios_max[(df_sitios_max['Temp'] >= UMBRAL_PREVENTIVO) & (df_sitios_max['Temp'] < UMBRAL_CRITICO)]
+    with t1:
+        if df_actual is not None:
+            st.title("📊 Estado de Red Actual")
+            st.info(f"🕒 Último Reporte: {df_actual['Timestamp'].max()}")
             
             t_crit = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
-            t_prev = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
-            t_ok = df_actual[df_actual['Temp'] < UMBRAL_PREVENTIVO]
-
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Total Tarjetas", f"{len(df_actual):,}")
-            with m2:
-                st.markdown(f'<div style="background-color:#fee2e2; border:2px solid #dc2626; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#991b1b; margin:0;">CRÍTICO</h4><p style="color:#dc2626; margin:0; font-weight:bold;">≥ {UMBRAL_CRITICO}°C</p><h1 style="color:#dc2626; margin:5px 0; font-size:45px;">{len(t_crit)}</h1><small style="color:#991b1b;">En <b>{len(s_crit)}</b> sitios</small></div>', unsafe_allow_html=True)
-            with m3:
-                st.markdown(f'<div style="background-color:#fef9c3; border:2px solid #ca8a04; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#854d0e; margin:0;">PREVENTIVO</h4><p style="color:#ca8a04; margin:0; font-weight:bold;">{UMBRAL_PREVENTIVO}-{UMBRAL_CRITICO-1}°C</p><h1 style="color:#ca8a04; margin:5px 0; font-size:45px;">{len(t_prev)}</h1><small style="color:#854d0e;">En <b>{len(s_prev)}</b> sitios</small></div>', unsafe_allow_html=True)
-            with m4:
-                st.markdown(f'<div style="background-color:#dcfce7; border:2px solid #16a34a; padding:15px; border-radius:10px; text-align:center;"><h4 style="color:#166534; margin:0;">ÓPTIMO</h4><p style="color:#16a34a; margin:0; font-weight:bold;">< {UMBRAL_PREVENTIVO}°C</p><h1 style="color:#166534; margin:5px 0; font-size:45px;">{len(t_ok)}</h1><small style="color:#166534;">En sitios OK</small></div>', unsafe_allow_html=True)
-
-            if not t_crit.empty:
-                st.divider()
-                st.subheader("🔝 Top Slots Críticos")
-                res_slots = t_crit.groupby('Slot').size().reset_index(name='Cant').sort_values('Cant', ascending=False).head(10)
-                res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
-                st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cant', color='Cant', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
-                
-                st.divider()
-                st.subheader("⚠️ Detalle de Sitios Críticos por Slot")
-                slot_foco = st.selectbox("Selecciona un Slot para ver sitios afectados:", sorted(t_crit['Slot'].unique()))
-                df_foco = t_crit[t_crit['Slot'] == slot_foco][['Sitio', 'Temp', 'ID_Full']].sort_values('Temp', ascending=False)
-                
-                df_xlsx = to_excel(df_foco)
-                st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
-                st.dataframe(df_foco, use_container_width=True, hide_index=True)
-
-   # --- PESTAÑA 3: HISTÓRICO (CORREGIDO) ---
-    with tab_hist:
-        st.subheader("📈 Gestión Histórica de Gran Volumen")
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            num_reportes = st.slider("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
-            reconstruir = st.button("🔥 Reconstruir Base Parquet (Modo PyArrow)")
+            m1, m2 = st.columns(2)
+            m1.metric("Tarjetas Totales", len(df_actual))
+            m2.metric("Alertas Críticas", len(t_crit))
             
-            if reconstruir:
-                progreso_bar = st.progress(0)
-                texto_estado = st.empty()
-                
-                if os.path.exists(PARQUET_FILE):
-                    os.remove(PARQUET_FILE)
+            if not t_crit.empty:
+                st.subheader("⚠️ Detalle de Críticos")
+                st.dataframe(t_crit, use_container_width=True)
+                # Botón de descarga corregido para evitar ModuleNotFoundError
+                excel_data = preparar_excel(t_crit)
+                st.download_button("📥 Descargar Críticos (Excel)", excel_data, "criticos.xlsx")
 
+    with t3:
+        st.subheader("📈 Reconstrucción de Histórico")
+        c_btn, c_fig = st.columns([1, 2])
+        
+        with c_btn:
+            n = st.number_input("Cantidad de archivos:", 1, len(archivos_lista), len(archivos_lista))
+            if st.button("🔥 GENERAR BASE DE DATOS"):
+                if os.path.exists(PARQUET_FILE): os.remove(PARQUET_FILE)
+                
                 writer = None
-                try:
-                    for i, p in enumerate(archivos_lista[:num_reportes]):
-                        texto_estado.text(f"Procesando {i+1}/{num_reportes}: {os.path.basename(p)}")
-                        progreso_bar.progress((i + 1) / num_reportes)
-                        
-                        data = extraer_datos_masivo(p)
-                        if data:
-                            temp_df = pd.DataFrame(data)
-                            temp_df['Slot'] = temp_df['Slot'].astype('int16')
-                            temp_df['Temp'] = temp_df['Temp'].astype('int16')
-                            
-                            temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])[['Temp', 'Slot']].max().reset_index()
-                            
-                            table = pa.Table.from_pandas(temp_df)
-                            if writer is None:
-                                writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
-                            writer.write_table(table)
-                        
-                        if i % 25 == 0:
-                            gc.collect()
+                p_bar = st.progress(0)
+                for i, path in enumerate(archivos_lista[:n]):
+                    df_tmp = extraer_datos_unidad(path)
+                    if df_tmp is not None:
+                        # Forzamos tipos de datos pequeños para evitar falta de memoria
+                        df_tmp['Slot'] = df_tmp['Slot'].astype('int16')
+                        df_tmp['Temp'] = df_tmp['Temp'].astype('int16')
+                        table = pa.Table.from_pandas(df_tmp)
+                        if writer is None:
+                            writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
+                        writer.write_table(table)
                     
-                    texto_estado.success(f"✅ ¡Base Parquet generada!")
-                    st.rerun() # Refresca para que aparezca el buscador
-                
-                except Exception as e:
-                    st.error(f"Error crítico: {e}")
-                finally:
-                    if writer:
-                        writer.close()
+                    if i % 20 == 0: 
+                        p_bar.progress((i+1)/n)
+                        gc.collect()
+                if writer: writer.close()
+                st.success("Base de datos creada."); st.rerun()
 
-        with c2:
-            if os.path.exists(PARQUET_FILE):
+        with c_fig:
+            if os.path.exists(PARQUET_FILE) and os.path.getsize(PARQUET_FILE) > 0:
                 try:
-                    # Leemos solo la columna de sitios para no saturar RAM
-                    tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
-                    sitios_disponibles = tabla_sitios.to_pandas()['Sitio'].unique()
-                    sitio_sel = st.selectbox("🔍 Buscar Sitio en Historial:", sorted(sitios_disponibles))
-                    
-                    if sitio_sel:
-                        df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
-                        ids = sorted(df_s['ID_Full'].unique())
-                        sel = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
-                        
-                        if sel:
-                            fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
-                                         x='Timestamp', y='Temp', color='ID_Full', markers=True,
-                                         title=f"Evolución Térmica: {sitio_sel}")
-                            fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
-                            st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Error al cargar historial: {e}")
-            else: 
-                st.info("Aún no has generado la base histórica.")
+                    df_h = pd.read_parquet(PARQUET_FILE)
+                    nodo = st.selectbox("Sitio:", sorted(df_h['Sitio'].unique()))
+                    fig = px.line(df_h[df_h['Sitio'] == nodo], x='Timestamp', y='Temp', color='ID_Full')
+                    st.plotly_chart(fig, use_container_width=True)
+                except: st.error("Archivo corrupto. Reconstruye la base.")
 
-    # --- OTRAS PESTAÑAS ---
-    with tab_alertas:
-        crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
-        if not crit_all.empty:
-            st.error(f"⚠️ Se encontraron {len(crit_all)} slots críticos.")
-            st.dataframe(crit_all[['Sitio', 'Slot', 'Temp']].sort_values('Temp', ascending=False), use_container_width=True)
-        else: st.success("✅ Todo OK.")
-
-    with tab_busq:
-        s_busq = st.selectbox("Buscar por Sitio:", sorted(df_actual['Sitio'].unique()))
-        st.dataframe(df_actual[df_actual['Sitio'] == s_busq], use_container_width=True)
-
-else:
-    st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
+    with t4:
+        st.header("🚀 Análisis de Upgrade")
+        if os.path.exists(PARQUET_FILE):
+            df_full = pd.read_parquet(PARQUET_FILE)
+            tiempos = sorted(df_full['Timestamp'].unique(), reverse=True)
+            cu1, cu2 = st.columns(2)
+            with cu1: f_up = st.file_uploader("Lista sitios:", type=['xlsx', 'csv'])
+            with cu2:
+                ref_sel = st.selectbox("🎯 Referencia:", tiempos, format_func=lambda x: x.strftime('%Y-%m-%d %H:%M'))
+            
+            if f_up:
+                df_l = pd.read_csv(f_up) if f_up.name.endswith('.csv') else pd.read_excel(f_up)
+                sitios_up = df_l['Sitio'].astype(str).str.strip().tolist()
+                res_up = df_full[df_full['Sitio'].isin(sitios_up)].groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
+                fig_up = px.line(res_up, x='Timestamp', y='Temp', color='Sitio')
+                # SOLUCIÓN AL TYPEERROR: Convertimos la referencia a milisegundos para Plotly
+                ref_ts = pd.Timestamp(ref_sel).timestamp() * 1000
+                fig_up.add_vline(x=ref_ts, line_dash="dash", line_color="orange")
+                st.plotly_chart(fig_up, use_container_width=True)
