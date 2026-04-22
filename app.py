@@ -9,11 +9,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 # 1. CONFIGURACIÓN DE PÁGINA
-st.set_page_config(page_title="Monitor Huawei - Sistema Integrado", layout="wide")
+st.set_page_config(page_title="Monitor Huawei Network - Pro", layout="wide")
 
 # CONFIGURACIÓN DE RUTAS Y UMBRALES
 FOLDER_PATH = 'Temperatura'
-PARQUET_FILE = 'base_v2.parquet' # Usamos V2 para evitar bloqueos de archivos anteriores
+# Cambiamos a V4 para asegurar que no lea ningún archivo corrupto anterior
+PARQUET_FILE = 'base_v4_pro.parquet' 
 UMBRAL_CRITICO = 78 
 UMBRAL_PREVENTIVO = 65
 
@@ -34,7 +35,7 @@ def extraer_datos_unidad(path):
                 lineas = bloque.split('\n')
                 if not lineas: continue
                 
-                # Requerimiento: NEName debe ir junto (ej: Site_A)
+                # NEName debe ir junto (Ej: Site_01)
                 sitio = lineas[0].strip().split()[0]
                 
                 # Regex para capturar Board Type, Slot y Temp
@@ -52,6 +53,7 @@ def extraer_datos_unidad(path):
 
 def preparar_excel(df):
     output = BytesIO()
+    # Usamos openpyxl para evitar errores de librerías faltantes
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
     return output.getvalue()
@@ -69,21 +71,21 @@ def listar_archivos(folder):
 archivos_lista = listar_archivos(FOLDER_PATH)
 
 if archivos_lista:
-    # Carga rápida para el estado actual
+    # Estado actual (Archivo más reciente)
     if "df_now" not in st.session_state:
         st.session_state["df_now"] = extraer_datos_unidad(archivos_lista[0])
     
     df_actual = st.session_state["df_now"]
     
     tab_dash, tab_busq, tab_hist, tab_upgrade = st.tabs([
-        "📊 DASHBOARD", "🔍 BUSCADOR", "📈 HISTÓRICO (+300)", "🚀 UPGRADE"
+        "📊 DASHBOARD", "🔍 BUSCADOR", "📈 HISTÓRICO MASIVO", "🚀 UPGRADE"
     ])
 
     # --- PESTAÑA 1: DASHBOARD ---
     with tab_dash:
         if df_actual is not None:
-            st.title("📊 Estado Actual de la Red")
-            st.info(f"🕒 Reporte procesado: {df_actual['Timestamp'].max()}")
+            st.title("📊 Estado de Red Actual")
+            st.info(f"🕒 Reporte: {df_actual['Timestamp'].max()}")
             
             t_crit = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
             t_prev = df_actual[(df_actual['Temp'] >= UMBRAL_PREVENTIVO) & (df_actual['Temp'] < UMBRAL_CRITICO)]
@@ -97,39 +99,39 @@ if archivos_lista:
 
             if not t_crit.empty:
                 st.divider()
-                st.subheader("🚨 Detalle de Alertas Críticas")
+                st.subheader("🚨 Detalle de Nodos en Alerta")
                 st.dataframe(t_crit.sort_values('Temp', ascending=False), use_container_width=True)
-                st.download_button("📥 Exportar Críticos a Excel", preparar_excel(t_crit), "alertas_criticas.xlsx")
+                st.download_button("📥 Descargar Alertas (Excel)", preparar_excel(t_crit), "reporte_critico.xlsx")
 
     # --- PESTAÑA 2: BUSCADOR ---
     with tab_busq:
         if df_actual is not None:
-            st.subheader("🔍 Consultar Nodo Específico")
-            busqueda = st.selectbox("Seleccione el sitio:", sorted(df_actual['Sitio'].unique()))
-            st.dataframe(df_actual[df_actual['Sitio'] == busqueda], use_container_width=True)
+            st.subheader("🔍 Localizador de Sitio")
+            nodo_sel = st.selectbox("Seleccione Nodo:", sorted(df_actual['Sitio'].unique()))
+            st.dataframe(df_actual[df_actual['Sitio'] == nodo_sel], use_container_width=True)
 
     # --- PESTAÑA 3: HISTÓRICO (PROCESAMIENTO SEGURO) ---
     with tab_hist:
-        st.subheader("📈 Reconstrucción de Historial Masivo")
-        col1, col2 = st.columns([1, 2])
+        st.subheader("📈 Gestión de Datos Históricos (+300 archivos)")
+        c1, c2 = st.columns([1, 2])
         
-        with col1:
-            n = st.number_input("Archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
-            if st.button("🔥 RECONSTRUIR BASE V2"):
+        with c1:
+            n = st.number_input("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
+            if st.button("🔥 GENERAR BASE DE DATOS"):
                 if os.path.exists(PARQUET_FILE):
                     os.remove(PARQUET_FILE)
                 
                 writer = None
-                progreso = st.progress(0)
-                status_msg = st.empty()
+                p_bar = st.progress(0)
+                status = st.empty()
                 
                 try:
                     for i, p in enumerate(archivos_lista[:n]):
-                        status_msg.text(f"Procesando: {os.path.basename(p)}")
+                        status.text(f"Procesando: {os.path.basename(p)} ({i+1}/{n})")
                         df_tmp = extraer_datos_unidad(p)
                         
                         if df_tmp is not None and not df_tmp.empty:
-                            # Tipos de datos eficientes para evitar llenar la RAM
+                            # Tipos de datos pequeños para no agotar la RAM
                             df_tmp['Slot'] = df_tmp['Slot'].astype('int16')
                             df_tmp['Temp'] = df_tmp['Temp'].astype('int16')
                             
@@ -138,49 +140,49 @@ if archivos_lista:
                                 writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
                             writer.write_table(table)
                         
-                        if i % 20 == 0:
-                            progreso.progress((i+1)/n)
+                        # Limpieza de memoria agresiva cada 10 archivos
+                        if i % 10 == 0:
+                            p_bar.progress((i+1)/n)
                             gc.collect()
                     
                     if writer:
                         writer.close()
-                        st.success("✅ Base histórica V2 generada correctamente.")
+                        st.success("✅ Base de datos construida con éxito.")
                         st.rerun()
                 except Exception as e:
-                    st.error(f"Error en procesamiento: {e}")
+                    st.error(f"Error en la reconstrucción: {e}")
 
-        with col2:
+        with c2:
             if os.path.exists(PARQUET_FILE) and os.path.getsize(PARQUET_FILE) > 500:
                 df_h = pd.read_parquet(PARQUET_FILE)
-                sel_h = st.selectbox("Elegir Sitio para tendencia:", sorted(df_h['Sitio'].unique()))
-                fig = px.line(df_h[df_h['Sitio'] == sel_h], x='Timestamp', y='Temp', color='ID_Full', markers=True)
+                s_h = st.selectbox("Seleccione Sitio para ver tendencia:", sorted(df_h['Sitio'].unique()))
+                df_v = df_h[df_h['Sitio'] == s_h]
+                fig = px.line(df_v, x='Timestamp', y='Temp', color='ID_Full', markers=True)
                 fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                 st.plotly_chart(fig, use_container_width=True)
 
     # --- PESTAÑA 4: UPGRADE ---
     with tab_upgrade:
-        st.header("🚀 Comparativa de Upgrade")
+        st.header("🚀 Análisis Post-Upgrade")
         if os.path.exists(PARQUET_FILE):
             df_full = pd.read_parquet(PARQUET_FILE)
             tiempos = sorted(df_full['Timestamp'].unique(), reverse=True)
             cu1, cu2 = st.columns(2)
             with cu1: 
-                f_up = st.file_uploader("Subir Excel/CSV con columna 'Sitio':", type=['xlsx', 'csv'])
+                file_up = st.file_uploader("Cargar lista de sitios upgrade (xlsx/csv):", type=['xlsx', 'csv'])
             with cu2:
-                ref = st.selectbox("🎯 Punto de Referencia (Fecha Upgrade):", tiempos, format_func=lambda x: x.strftime('%Y-%m-%d %H:%M'))
+                ref_ts = st.selectbox("🎯 Fecha de Referencia:", tiempos, format_func=lambda x: x.strftime('%Y-%m-%d %H:%M'))
             
-            if f_up:
-                df_l = pd.read_csv(f_up) if f_up.name.endswith('.csv') else pd.read_excel(f_up)
-                lista_sitios = df_l['Sitio'].astype(str).str.strip().tolist()
-                df_filtrado = df_full[df_full['Sitio'].isin(lista_sitios)]
+            if file_up:
+                df_up = pd.read_csv(file_up) if file_up.name.endswith('.csv') else pd.read_excel(file_up)
+                nodos_up = df_up['Sitio'].astype(str).str.strip().tolist()
+                df_filt = df_full[df_full['Sitio'].isin(nodos_up)]
                 
-                if not df_filtrado.empty:
-                    res = df_filtrado.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
-                    fig_u = px.line(res, x='Timestamp', y='Temp', color='Sitio', title="Evolución de Sitios Upgrade")
-                    # Corrección del error de vline usando timestamp en milisegundos
-                    fig_u.add_vline(x=pd.Timestamp(ref).timestamp() * 1000, line_dash="dash", line_color="orange")
-                    st.plotly_chart(fig_u, use_container_width=True)
-                else:
-                    st.warning("No se encontraron coincidencias para los sitios cargados.")
+                if not df_filt.empty:
+                    res_up = df_filt.groupby(['Timestamp', 'Sitio'])['Temp'].max().reset_index()
+                    fig_up = px.line(res_up, x='Timestamp', y='Temp', color='Sitio')
+                    # Solución al error de Plotly: timestamp en milisegundos
+                    fig_up.add_vline(x=pd.Timestamp(ref_ts).timestamp() * 1000, line_dash="dash", line_color="orange")
+                    st.plotly_chart(fig_up, use_container_width=True)
 else:
-    st.warning("No se detectaron archivos .txt en la carpeta 'Temperatura'.")
+    st.warning("⚠️ No se encontraron archivos .txt en la carpeta 'Temperatura'.")
