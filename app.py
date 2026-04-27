@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import re
 import plotly.express as px
-import gc
+import gc  # Liberación de memoria manual
 from io import BytesIO
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -31,7 +31,6 @@ def extraer_datos_masivo(path):
             for bloque in bloques[1:]:
                 lineas = bloque.split('\n')
                 if not lineas: continue
-                # Requerimiento: NEName junto
                 nombre_sitio = lineas[0].strip().split()[0]
                 
                 filas = re.findall(r'^\s*\d+\s+(\d+)\s+(\d+)\s+(\d+)', bloque, re.MULTILINE)
@@ -68,7 +67,7 @@ if archivos_lista:
         "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO", "🚀 ANÁLISIS UPGRADE"
     ])
 
-    # --- PESTAÑA DASHBOARD (RESTAURADA AL 100%) ---
+    # --- PESTAÑA DASHBOARD ---
     with tab_dash:
         if not df_actual.empty:
             ultima_hora = df_actual['Timestamp'].max().strftime('%d/%m/%Y %H:%M:%S')
@@ -107,46 +106,69 @@ if archivos_lista:
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
                 st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cantidad', color='Cantidad', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
 
-    # --- PESTAÑA HISTÓRICO (RESTAURADA CON COMPARACIÓN MÚLTIPLE) ---
+    # --- PESTAÑA HISTÓRICO (MODIFICADA PARA SOPORTAR 380+ ARCHIVOS) ---
     with tab_hist:
         st.subheader("📈 Gestión Histórica")
         c1, c2 = st.columns([1, 2])
         with c1:
-            num_reportes = st.slider("Archivos:", 1, len(archivos_lista), min(100, len(archivos_lista)))
-            if st.button("🔥 Reconstruir Base Parquet"):
+            num_reportes = st.slider("Archivos a procesar:", 1, len(archivos_lista), min(100, len(archivos_lista)))
+            if st.button("🔥 Reconstruir Base Parquet (Modo Seguro)"):
                 progreso = st.progress(0)
                 if os.path.exists(PARQUET_FILE): os.remove(PARQUET_FILE)
+                
                 writer = None
                 try:
                     for i, p in enumerate(archivos_lista[:num_reportes]):
                         progreso.progress((i + 1) / num_reportes)
                         data = extraer_datos_masivo(p)
+                        
                         if data:
-                            table = pa.Table.from_pandas(pd.DataFrame(data))
-                            if writer is None: writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
+                            # Optimizamos tipos de datos para reducir RAM
+                            df_temp = pd.DataFrame(data)
+                            df_temp['Slot'] = df_temp['Slot'].astype('int16')
+                            df_temp['Temp'] = df_temp['Temp'].astype('int16')
+                            
+                            table = pa.Table.from_pandas(df_temp)
+                            
+                            # Escritura incremental directo a disco
+                            if writer is None: 
+                                writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
+                            
                             writer.write_table(table)
-                    st.success("✅ Base generada.")
-                    st.rerun()
-                except Exception as e: st.error(f"Error: {e}")
-                finally: 
+                            
+                            # Liberación de memoria
+                            del df_temp
+                            del table
+                            del data
+                            if i % 10 == 0: gc.collect()
+
                     if writer: writer.close()
+                    st.success("✅ Base generada con éxito.")
+                    st.rerun()
+                except Exception as e: 
+                    st.error(f"Error: {e}")
+                    if writer: writer.close()
+        
         with c2:
             if os.path.exists(PARQUET_FILE):
                 try:
+                    # Lectura parcial para el menú (solo columna Sitio)
                     df_h_menu = pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()
                     sitio_sel = st.selectbox("🔍 Ver Historial de:", sorted(df_h_menu['Sitio'].unique()))
+                    
                     if sitio_sel:
+                        # Lectura filtrada (Solo carga lo necesario en RAM)
                         df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
                         ids = sorted(df_s['ID_Full'].unique())
-                        # REUPERADO: Comparación múltiple de slots
+                        
                         sel_ids = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
                         if sel_ids:
                             fig_h = px.line(df_s[df_s['ID_Full'].isin(sel_ids)], x='Timestamp', y='Temp', color='ID_Full', markers=True)
                             fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                             st.plotly_chart(fig_h, use_container_width=True)
-                except Exception as e: st.error(f"Error: {e}")
+                except Exception as e: st.error(f"Error al cargar historial: {e}")
 
-    # --- PESTAÑA ANÁLISIS UPGRADE (LA NUEVA FUNCIONALIDAD) ---
+    # --- PESTAÑA ANÁLISIS UPGRADE ---
     with tab_upgrade:
         st.header("🚀 Análisis de Upgrade")
         if os.path.exists(PARQUET_FILE):
@@ -155,17 +177,16 @@ if archivos_lista:
             
             c_u1, c_u2 = st.columns(2)
             with c_u1:
-                f_up = st.file_uploader("Subir lista de 93 sitios:", type=['xlsx', 'csv'])
+                f_up = st.file_uploader("Subir lista de sitios intervenidos:", type=['xlsx', 'csv'])
             with c_u2:
-                # Selector para el Jueves 16 15:00
-                referencia = st.selectbox("🎯 Punto de Referencia (Jueves 16 15:00):", tiempos, format_func=lambda x: x.strftime('%Y-%m-%d %H:%M'))
+                referencia = st.selectbox("🎯 Punto de Referencia (Pre-Upgrade):", tiempos, format_func=lambda x: pd.to_datetime(x).strftime('%Y-%m-%d %H:%M'))
                 ref_ts = pd.Timestamp(referencia)
 
             sitios_import = []
             if f_up:
                 try:
                     df_l = pd.read_csv(f_up) if f_up.name.endswith('.csv') else pd.read_excel(f_up)
-                    sitios_import = df_l['Sitio'].astype(str).str.strip().unique().tolist()
+                    sitios_import = df_l.iloc[:, 0].astype(str).str.strip().unique().tolist()
                 except: st.error("Error al leer archivo de sitios.")
 
             sel_up = st.multiselect("Nodos confirmados:", sorted(df_full['Sitio'].unique()), default=[s for s in sitios_import if s in df_full['Sitio'].unique()])
@@ -188,7 +209,7 @@ if archivos_lista:
                     st.success(f"Nodos con mejora significativa (>10°C): {len(bajan_10)}")
                     st.dataframe(bajan_10, use_container_width=True, hide_index=True)
                 else: st.info("No hay bajas > 10°C en los nodos seleccionados para esa hora.")
-        else: st.info("Genera el historial primero.")
+        else: st.info("Genera el historial primero en la pestaña 📈 HISTÓRICO.")
 
     # --- PESTAÑAS RESTANTES ---
     with tab_alertas:
@@ -198,4 +219,4 @@ if archivos_lista:
         st.dataframe(df_actual[df_actual['Sitio'] == sb], use_container_width=True)
 
 else:
-    st.warning("No hay archivos en la carpeta.")
+    st.warning(f"No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
