@@ -56,7 +56,8 @@ def listar_archivos(folder):
 
 def to_excel(df):
     output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    # Cambiamos 'xlsxwriter' por 'openpyxl' para que coincida con tus requirements
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Datos')
     return output.getvalue()
 
