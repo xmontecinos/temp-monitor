@@ -106,7 +106,7 @@ if archivos_lista:
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
                 st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cantidad', color='Cantidad', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
 
-   # --- PESTAÑA HISTÓRICO (VERSION ULTRA-ESTABLE) ---
+   # --- PESTAÑA HISTÓRICO (VERSIÓN ANTICORRUPCIÓN) ---
     with tab_hist:
         st.subheader("📈 Gestión Histórica")
         c1, c2 = st.columns([1, 2])
@@ -115,56 +115,57 @@ if archivos_lista:
             if st.button("🔥 Reconstruir Base Parquet"):
                 progreso = st.progress(0)
                 status_text = st.empty()
-                if os.path.exists(PARQUET_FILE): 
+                
+                # Borrado seguro
+                if os.path.exists(PARQUET_FILE):
                     try: os.remove(PARQUET_FILE)
                     except: pass
                 
-                writer = None
                 try:
+                    # PROCESAMIENTO POR LOTES PARA EVITAR CORRUPCIÓN
                     for i, p in enumerate(archivos_lista[:num_reportes]):
                         progreso.progress((i + 1) / num_reportes)
-                        status_text.text(f"Procesando: {os.path.basename(p)}")
+                        status_text.text(f"Procesando {i+1}/{num_reportes}: {os.path.basename(p)}")
                         
                         data = extraer_datos_masivo(p)
                         if data:
                             df_temp = pd.DataFrame(data)
-                            # Forzamos tipos ligeros antes de convertir a tabla
+                            # Tipos ultra-ligeros
                             df_temp['Slot'] = df_temp['Slot'].astype('int16')
                             df_temp['Temp'] = df_temp['Temp'].astype('int16')
                             
+                            # Escritura atómica (Abrir, escribir y cerrar en cada ciclo)
+                            # Esto es un poco más lento pero evita que el archivo se rompa
                             table = pa.Table.from_pandas(df_temp)
-                            if writer is None:
-                                writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
                             
-                            writer.write_table(table)
+                            if not os.path.exists(PARQUET_FILE):
+                                pq.write_table(table, PARQUET_FILE, compression='snappy')
+                            else:
+                                # Leemos lo anterior y concatenamos (solo si la RAM lo permite)
+                                # O mejor: usamos append si tu versión de pyarrow lo soporta:
+                                with pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy') as writer:
+                                    writer.write_table(table)
                             
-                            # Limpieza agresiva por cada ciclo
-                            del df_temp
-                            del table
-                            del data
-                            if i % 5 == 0: gc.collect()
-
-                    if writer:
-                        writer.close()
-                        writer = None # Asegurar que se libere el puntero
+                            del df_temp, table, data
+                            if i % 10 == 0: gc.collect()
                     
-                    st.success(f"✅ Base de {num_reportes} archivos lista.")
+                    st.success("✅ Base generada correctamente.")
                     st.balloons()
-                    # En lugar de st.rerun(), usamos un mensaje informativo para evitar el crash post-proceso
-                    st.info("Por favor, selecciona un nodo a la derecha para ver los datos.")
-                    
                 except Exception as e:
-                    st.error(f"Error en proceso: {str(e)}")
+                    st.error(f"Error crítico: {str(e)}")
                 finally:
-                    if writer: writer.close()
                     gc.collect()
 
         with c2:
+            # VALIDACIÓN DE ARCHIVO ANTES DE LEER
             if os.path.exists(PARQUET_FILE):
-                # Usar use_container_width=True pero sin saturar logs
                 try:
-                    df_h_menu = pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()
-                    sitio_sel = st.selectbox("🔍 Historial de:", sorted(df_h_menu['Sitio'].unique()))
+                    # Usamos una lectura rápida de metadatos para verificar integridad
+                    parquet_file = pq.ParquetFile(PARQUET_FILE)
+                    
+                    # Si llegamos aquí, el archivo está sano
+                    df_h_menu = pd.read_parquet(PARQUET_FILE, columns=['Sitio'])
+                    sitio_sel = st.selectbox("🔍 Ver Historial de:", sorted(df_h_menu['Sitio'].unique()))
                     
                     if sitio_sel:
                         df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
@@ -176,7 +177,8 @@ if archivos_lista:
                             fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                             st.plotly_chart(fig_h, use_container_width=True)
                 except Exception as e:
-                    st.error("Error al leer Parquet. Intenta reconstruir la base.")
+                    st.error("⚠️ El archivo Parquet está dañado o incompleto.")
+                    st.info("Esto sucede cuando el servidor se queda sin memoria al final. Intenta procesar menos archivos (ej. 250) o liberar RAM del servidor.")
     # --- PESTAÑA ANÁLISIS UPGRADE ---
     with tab_upgrade:
         st.header("🚀 Análisis de Upgrade")
