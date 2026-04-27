@@ -157,28 +157,50 @@ if archivos_lista:
                     gc.collect()
 
         with c2:
-            # VALIDACIÓN DE ARCHIVO ANTES DE LEER
             if os.path.exists(PARQUET_FILE):
                 try:
-                    # Usamos una lectura rápida de metadatos para verificar integridad
-                    parquet_file = pq.ParquetFile(PARQUET_FILE)
-                    
-                    # Si llegamos aquí, el archivo está sano
-                    df_h_menu = pd.read_parquet(PARQUET_FILE, columns=['Sitio'])
+                    # 1. Leemos solo la columna Sitio para el menú (Ahorro de RAM)
+                    df_h_menu = pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()
                     sitio_sel = st.selectbox("🔍 Ver Historial de:", sorted(df_h_menu['Sitio'].unique()))
                     
                     if sitio_sel:
+                        # 2. Leemos los datos completos solo de este sitio
                         df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
+                        
+                        # --- MODIFICACIÓN CRÍTICA AQUÍ ---
+                        # Aseguramos que el tiempo y la temperatura sean del tipo correcto
+                        df_s['Timestamp'] = pd.to_datetime(df_s['Timestamp'])
+                        df_s['Temp'] = pd.to_numeric(df_s['Temp'])
+                        
+                        # Ordenamos por tiempo (fundamental para que px.line dibuje la línea)
+                        df_s = df_s.sort_values('Timestamp')
+                        # ---------------------------------
+
                         ids = sorted(df_s['ID_Full'].unique())
-                        sel_ids = st.multiselect("Slots:", ids, default=ids[:2] if ids else [])
+                        sel_ids = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
                         
                         if sel_ids:
-                            fig_h = px.line(df_s[df_s['ID_Full'].isin(sel_ids)], x='Timestamp', y='Temp', color='ID_Full')
+                            # Filtrado de slots seleccionados
+                            df_plot = df_s[df_s['ID_Full'].isin(sel_ids)]
+                            
+                            # Creamos la gráfica con marcadores para asegurar visibilidad
+                            fig_h = px.line(
+                                df_plot, 
+                                x='Timestamp', 
+                                y='Temp', 
+                                color='ID_Full', 
+                                markers=True,
+                                title=f"Evolución Térmica: {sitio_sel}"
+                            )
+                            
+                            # Añadimos línea de umbral y slider de tiempo
                             fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+                            fig_h.update_xaxes(rangeslider_visible=True)
+                            
                             st.plotly_chart(fig_h, use_container_width=True)
-                except Exception as e:
-                    st.error("⚠️ El archivo Parquet está dañado o incompleto.")
-                    st.info("Esto sucede cuando el servidor se queda sin memoria al final. Intenta procesar menos archivos (ej. 250) o liberar RAM del servidor.")
+                            
+                except Exception as e: 
+                    st.error(f"Error al cargar historial: {e}")
     # --- PESTAÑA ANÁLISIS UPGRADE ---
     with tab_upgrade:
         st.header("🚀 Análisis de Upgrade")
