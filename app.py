@@ -106,68 +106,77 @@ if archivos_lista:
                 res_slots['Slot_Label'] = "Slot " + res_slots['Slot'].astype(str)
                 st.plotly_chart(px.bar(res_slots, x='Slot_Label', y='Cantidad', color='Cantidad', color_continuous_scale='Reds', text_auto=True), use_container_width=True)
 
-    # --- PESTAÑA HISTÓRICO (MODIFICADA PARA SOPORTAR 380+ ARCHIVOS) ---
+   # --- PESTAÑA HISTÓRICO (VERSION ULTRA-ESTABLE) ---
     with tab_hist:
         st.subheader("📈 Gestión Histórica")
         c1, c2 = st.columns([1, 2])
         with c1:
-            num_reportes = st.slider("Archivos a procesar:", 1, len(archivos_lista), min(100, len(archivos_lista)))
-            if st.button("🔥 Reconstruir Base Parquet (Modo Seguro)"):
+            num_reportes = st.slider("Archivos:", 1, len(archivos_lista), min(100, len(archivos_lista)))
+            if st.button("🔥 Reconstruir Base Parquet"):
                 progreso = st.progress(0)
-                if os.path.exists(PARQUET_FILE): os.remove(PARQUET_FILE)
+                status_text = st.empty()
+                if os.path.exists(PARQUET_FILE): 
+                    try: os.remove(PARQUET_FILE)
+                    except: pass
                 
                 writer = None
                 try:
                     for i, p in enumerate(archivos_lista[:num_reportes]):
                         progreso.progress((i + 1) / num_reportes)
-                        data = extraer_datos_masivo(p)
+                        status_text.text(f"Procesando: {os.path.basename(p)}")
                         
+                        data = extraer_datos_masivo(p)
                         if data:
-                            # Optimizamos tipos de datos para reducir RAM
                             df_temp = pd.DataFrame(data)
+                            # Forzamos tipos ligeros antes de convertir a tabla
                             df_temp['Slot'] = df_temp['Slot'].astype('int16')
                             df_temp['Temp'] = df_temp['Temp'].astype('int16')
                             
                             table = pa.Table.from_pandas(df_temp)
-                            
-                            # Escritura incremental directo a disco
-                            if writer is None: 
+                            if writer is None:
                                 writer = pq.ParquetWriter(PARQUET_FILE, table.schema, compression='snappy')
                             
                             writer.write_table(table)
                             
-                            # Liberación de memoria
+                            # Limpieza agresiva por cada ciclo
                             del df_temp
                             del table
                             del data
-                            if i % 10 == 0: gc.collect()
+                            if i % 5 == 0: gc.collect()
 
+                    if writer:
+                        writer.close()
+                        writer = None # Asegurar que se libere el puntero
+                    
+                    st.success(f"✅ Base de {num_reportes} archivos lista.")
+                    st.balloons()
+                    # En lugar de st.rerun(), usamos un mensaje informativo para evitar el crash post-proceso
+                    st.info("Por favor, selecciona un nodo a la derecha para ver los datos.")
+                    
+                except Exception as e:
+                    st.error(f"Error en proceso: {str(e)}")
+                finally:
                     if writer: writer.close()
-                    st.success("✅ Base generada con éxito.")
-                    st.rerun()
-                except Exception as e: 
-                    st.error(f"Error: {e}")
-                    if writer: writer.close()
-        
+                    gc.collect()
+
         with c2:
             if os.path.exists(PARQUET_FILE):
+                # Usar use_container_width=True pero sin saturar logs
                 try:
-                    # Lectura parcial para el menú (solo columna Sitio)
                     df_h_menu = pq.read_table(PARQUET_FILE, columns=['Sitio']).to_pandas()
-                    sitio_sel = st.selectbox("🔍 Ver Historial de:", sorted(df_h_menu['Sitio'].unique()))
+                    sitio_sel = st.selectbox("🔍 Historial de:", sorted(df_h_menu['Sitio'].unique()))
                     
                     if sitio_sel:
-                        # Lectura filtrada (Solo carga lo necesario en RAM)
                         df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
                         ids = sorted(df_s['ID_Full'].unique())
+                        sel_ids = st.multiselect("Slots:", ids, default=ids[:2] if ids else [])
                         
-                        sel_ids = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
                         if sel_ids:
-                            fig_h = px.line(df_s[df_s['ID_Full'].isin(sel_ids)], x='Timestamp', y='Temp', color='ID_Full', markers=True)
+                            fig_h = px.line(df_s[df_s['ID_Full'].isin(sel_ids)], x='Timestamp', y='Temp', color='ID_Full')
                             fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
                             st.plotly_chart(fig_h, use_container_width=True)
-                except Exception as e: st.error(f"Error al cargar historial: {e}")
-
+                except Exception as e:
+                    st.error("Error al leer Parquet. Intenta reconstruir la base.")
     # --- PESTAÑA ANÁLISIS UPGRADE ---
     with tab_upgrade:
         st.header("🚀 Análisis de Upgrade")
