@@ -180,24 +180,36 @@ if archivos_lista:
                         sel_ids = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
                         
                         if sel_ids:
-                            # Filtrado de slots seleccionados
-                            df_plot = df_s[df_s['ID_Full'].isin(sel_ids)]
-                            
-                            # Creamos la gráfica con marcadores para asegurar visibilidad
-                            fig_h = px.line(
-                                df_plot, 
-                                x='Timestamp', 
-                                y='Temp', 
-                                color='ID_Full', 
-                                markers=True,
-                                title=f"Evolución Térmica: {sitio_sel}"
-                            )
-                            
-                            # Añadimos línea de umbral y slider de tiempo
-                            fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
-                            fig_h.update_xaxes(rangeslider_visible=True)
-                            
-                            st.plotly_chart(fig_h, use_container_width=True)
+    df_plot = df_s[df_s['ID_Full'].isin(sel_ids)].copy()
+    
+    # --- PASO 1: LIMPIEZA DE TIEMPO ---
+    # Convertir a string para evitar que milisegundos amontonen los puntos
+    df_plot['Timestamp_Str'] = df_plot['Timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+    
+    # Eliminar duplicados si los hay (misma hora/mismo slot)
+    df_plot = df_plot.drop_duplicates(subset=['Timestamp_Str', 'ID_Full'])
+    
+    # --- PASO 2: FORZAR LÍNEA ---
+    fig_h = px.line(
+        df_plot, 
+        x='Timestamp_Str', # Usamos la versión texto para que los separe uniformemente
+        y='Temp', 
+        color='ID_Full',
+        markers=True,
+        category_orders={"Timestamp_Str": sorted(df_plot['Timestamp_Str'].unique())}
+    )
+    
+    # --- PASO 3: AJUSTES VISUALES ---
+    fig_h.update_layout(
+        xaxis_title="Fecha y Hora del Reporte",
+        yaxis_title="Temperatura (°C)",
+        hovermode="x unified"
+    )
+    
+    # Línea de umbral (ahora basada en el eje X de texto)
+    fig_h.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
+    
+    st.plotly_chart(fig_h, use_container_width=True)
                             
                 except Exception as e: 
                     st.error(f"Error al cargar historial: {e}")
