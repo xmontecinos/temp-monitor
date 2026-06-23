@@ -1,140 +1,52 @@
 import streamlit as st
 import pandas as pd
-import os
 import re
-from streamlit_autorefresh import st_autorefresh
+import plotly.express as px
 
-# =========================
-# CONFIG
-# =========================
-st.set_page_config(page_title="FAN Monitoring Real-Time", layout="wide")
+st.set_page_config(page_title="Monitor de Temperatura de Sitios", layout="wide")
 
-FOLDER = "FANF"
-UMBRAL = 90
+st.title("🌡️ Reporte Gráfico de Temperaturas")
 
-st_autorefresh(interval=10_000, key="refresh")  # 10 segundos
+# Configuración en el Sidebar
+st.sidebar.header("Configuración")
+target_sites = st.sidebar.text_input("Sitios a buscar (separados por |)", "01_314")
+uploaded_files = st.sidebar.file_uploader("Sube tus archivos .txt", accept_multiple_files=True)
 
-# =========================
-# ESTADO EN MEMORIA
-# =========================
-if "df" not in st.session_state:
-    st.session_state.df = pd.DataFrame()
+data_rows = []
 
-if "procesados" not in st.session_state:
-    st.session_state.procesados = set()
-
-if "alertas_previas" not in st.session_state:
-    st.session_state.alertas_previas = set()
-
-# =========================
-# EXTRACCIÓN
-# =========================
-def extraer_datos_fan(path):
-    rows = []
-
-    try:
-        with open(path, "r", encoding="latin-1", errors="ignore") as f:
-            content = f.read()
-
-        bloques = content.split("MML Command Result")
-
-        for bloque in bloques[1:]:
-            ne = re.search(r"NE Name\s*:\s*([\w_-]+)", bloque)
-            if not ne:
-                continue
-
-            sitio = ne.group(1)
-
-            slots = re.findall(r"Slot No\.\s*=\s*(\d+)", bloque)
-            speeds = re.findall(r"Fan Speed Rate\(%\)\s*=\s*(\d+)", bloque)
-
-            for s, v in zip(slots, speeds):
-                val = int(v)
-
-                rows.append({
-                    "Sitio": sitio,
-                    "Slot": s,
-                    "Fan": val,
-                    "Estado": "CRÍTICO" if val >= UMBRAL else "OK"
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        content = uploaded_file.read().decode('latin-1', errors='ignore')
+        
+        # Tu lógica de Regex (se mantiene igual)
+        regex_bloque = r'NE Name:\s+(' + target_sites + r').*?\+\+\+\s+\S+\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2}).*?RETCODE = 0.*?Display Board Temperature(.*?)\n---    END'
+        blocks = re.findall(regex_bloque, content, re.DOTALL)
+        
+        for ne_name, fecha, hora, tabla in blocks:
+            filas = re.findall(r'(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+([A-Z0-9]+)', tabla)
+            for cab, sub, slot, temp, hpa in filas:
+                data_rows.append({
+                    "Fecha_Hora": f"{fecha} {hora}",
+                    "Sitio": ne_name.strip(),
+                    "Slot": slot,
+                    "Temp_Board": int(temp),
+                    "Temp_HPA": hpa
                 })
 
-    except Exception:
-        pass
+    if data_rows:
+        df = pd.DataFrame(data_rows)
+        df['Fecha_Hora'] = pd.to_datetime(df['Fecha_Hora'])
 
-    return rows
+        # --- VISUALIZACIÓN ---
+        st.subheader(f"Datos del Sitio: {target_sites}")
+        
+        # Gráfico de Líneas con Plotly
+        fig = px.line(df, x="Fecha_Hora", y="Temp_Board", color="Slot", 
+                     title="Evolución de Temperatura por Slot",
+                     markers=True)
+        st.plotly_chart(fig, use_container_width=True)
 
-# =========================
-# INGESTA INCREMENTAL
-# =========================
-def cargar_nuevos():
-    archivos = set(os.listdir(FOLDER))
-    nuevos = archivos - st.session_state.procesados
-
-    rows = []
-
-    for f in nuevos:
-        path = os.path.join(FOLDER, f)
-        rows.extend(extraer_datos_fan(path))
-        st.session_state.procesados.add(f)
-
-    if rows:
-        df_new = pd.DataFrame(rows)
-        st.session_state.df = pd.concat(
-            [st.session_state.df, df_new],
-            ignore_index=True
-        )
-
-# =========================
-# EJECUCIÓN INGESTA
-# =========================
-cargar_nuevos()
-df = st.session_state.df
-
-# =========================
-# ALERTAS
-# =========================
-alertas = df[df["Fan"] >= UMBRAL] if not df.empty else pd.DataFrame()
-
-# detectar nuevas alarmas
-nuevas_alertas = set()
-
-if not alertas.empty:
-    nuevas_alertas = set(
-        alertas["Sitio"].astype(str) + "-" + alertas["Slot"].astype(str)
-    )
-
-if nuevas_alertas - st.session_state.alertas_previas:
-    st.toast("🚨 ALERTA FAN > 90% detectada", icon="🔥")
-
-st.session_state.alertas_previas = nuevas_alertas
-
-# =========================
-# UI PRINCIPAL
-# =========================
-st.title("🔥 FAN Monitoring Real-Time (Huawei)")
-
-col1, col2, col3 = st.columns(3)
-
-col1.metric("Registros totales", len(df))
-col2.metric("Alertas activas", len(alertas))
-col3.metric("Sitios en alerta", alertas["Sitio"].nunique() if not alertas.empty else 0)
-
-# =========================
-# ALERTAS CRÍTICAS
-# =========================
-st.subheader("🚨 Alarmas FAN > 90%")
-
-if not alertas.empty:
-    st.error("⚠️ Equipos en condición CRÍTICA")
-    st.dataframe(alertas, use_container_width=True)
-else:
-    st.success("✔ Sin alarmas activas")
-
-# =========================
-# TOP 20
-# =========================
-st.subheader("📊 Top 20 FAN más altos")
-
-if not df.empty:
-    top = df.sort_values("Fan", ascending=False).head(20)
-    st.bar_chart(top.set_index("Sitio")["Fan"])
+        # Tabla de datos interactiva
+        st.dataframe(df)
+    else:
+        st.warning("No se encontraron coincidencias con esos sitios.")
