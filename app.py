@@ -14,6 +14,7 @@ st.set_page_config(page_title="Monitor Red - Huawei", layout="wide")
 # UMBRALES
 UMBRAL_CRITICO = 78 
 UMBRAL_PREVENTIVO = 65
+UMBRAL_SALTO_TERMICO = 10  # <- NUEVO: Alerta si sube 10°C o más entre reportes consecuivos
 FOLDER_PATH = 'Temperatura'
 PARQUET_FILE = 'base_historica.parquet'
 
@@ -56,7 +57,6 @@ def listar_archivos(folder):
 
 def to_excel(df):
     output = BytesIO()
-    # Cambiamos 'xlsxwriter' por 'openpyxl' para que coincida con tus requirements
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Datos')
     return output.getvalue()
@@ -65,13 +65,18 @@ def to_excel(df):
 archivos_lista = listar_archivos(FOLDER_PATH)
 
 if archivos_lista:
+    # Cargar reporte actual (el más reciente)
     if "df_now" not in st.session_state:
         st.session_state["df_now"] = pd.DataFrame(extraer_datos_masivo(archivos_lista[0]))
     
+    # Cargar reporte anterior (para análisis de tendencias)
+    if len(archivos_lista) > 1 and "df_prev" not in st.session_state:
+        st.session_state["df_prev"] = pd.DataFrame(extraer_datos_masivo(archivos_lista[1]))
+
     df_actual = st.session_state["df_now"]
 
     tab_dash, tab_alertas, tab_busq, tab_hist = st.tabs([
-        "📊 DASHBOARD", "🚨 ALERTAS ACTUALES", "🔍 BUSCADOR", "📈 HISTÓRICO"
+        "📊 DASHBOARD", "🚨 ALERTAS Y TENDENCIAS", "🔍 BUSCADOR", "📈 HISTÓRICO"
     ])
 
    # --- PESTAÑA 0: DASHBOARD ---
@@ -119,88 +124,28 @@ if archivos_lista:
                 st.download_button(label='📥 Descargar Detalle Slot a Excel', data=df_xlsx, file_name=f'criticos_slot_{slot_foco}.xlsx')
                 st.dataframe(df_foco, use_container_width=True, hide_index=True)
 
-   # --- PESTAÑA 3: HISTÓRICO (CORREGIDO) ---
-    with tab_hist:
-        st.subheader("📈 Gestión Histórica de Gran Volumen")
-        c1, c2 = st.columns(2)
-        
-        with c1:
-            num_reportes = st.slider("Cantidad de archivos a procesar:", 1, len(archivos_lista), len(archivos_lista))
-            reconstruir = st.button("🔥 Reconstruir Base Parquet (Modo PyArrow)")
-            
-            if reconstruir:
-                progreso_bar = st.progress(0)
-                texto_estado = st.empty()
-                
-                if os.path.exists(PARQUET_FILE):
-                    os.remove(PARQUET_FILE)
-
-                writer = None
-                try:
-                    for i, p in enumerate(archivos_lista[:num_reportes]):
-                        texto_estado.text(f"Procesando {i+1}/{num_reportes}: {os.path.basename(p)}")
-                        progreso_bar.progress((i + 1) / num_reportes)
-                        
-                        data = extraer_datos_masivo(p)
-                        if data:
-                            temp_df = pd.DataFrame(data)
-                            temp_df['Slot'] = temp_df['Slot'].astype('int16')
-                            temp_df['Temp'] = temp_df['Temp'].astype('int16')
-                            
-                            temp_df = temp_df.groupby([temp_df['Timestamp'].dt.floor('h'), 'Sitio', 'ID_Full'])[['Temp', 'Slot']].max().reset_index()
-                            
-                            table = pa.Table.from_pandas(temp_df)
-                            if writer is None:
-                                writer = pq.ParquetWriter(PARQUET_FILE, table.schema)
-                            writer.write_table(table)
-                        
-                        if i % 25 == 0:
-                            gc.collect()
-                    
-                    texto_estado.success(f"✅ ¡Base Parquet generada!")
-                    st.rerun() # Refresca para que aparezca el buscador
-                
-                except Exception as e:
-                    st.error(f"Error crítico: {e}")
-                finally:
-                    if writer:
-                        writer.close()
-
-        with c2:
-            if os.path.exists(PARQUET_FILE):
-                try:
-                    # Leemos solo la columna de sitios para no saturar RAM
-                    tabla_sitios = pq.read_table(PARQUET_FILE, columns=['Sitio'])
-                    sitios_disponibles = tabla_sitios.to_pandas()['Sitio'].unique()
-                    sitio_sel = st.selectbox("🔍 Buscar Sitio en Historial:", sorted(sitios_disponibles))
-                    
-                    if sitio_sel:
-                        df_s = pd.read_parquet(PARQUET_FILE, filters=[('Sitio', '==', sitio_sel)])
-                        ids = sorted(df_s['ID_Full'].unique())
-                        sel = st.multiselect("Slots a comparar:", ids, default=ids[:2] if ids else [])
-                        
-                        if sel:
-                            fig = px.line(df_s[df_s['ID_Full'].isin(sel)], 
-                                         x='Timestamp', y='Temp', color='ID_Full', markers=True,
-                                         title=f"Evolución Térmica: {sitio_sel}")
-                            fig.add_hline(y=UMBRAL_CRITICO, line_dash="dash", line_color="red")
-                            st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Error al cargar historial: {e}")
-            else: 
-                st.info("Aún no has generado la base histórica.")
-
-    # --- OTRAS PESTAÑAS ---
+    # --- PESTAÑA 1: ALERTAS ACTUALES Y TENDENCIAS ---
     with tab_alertas:
+        st.subheader("🚨 Monitoreo de Alertas del Reporte")
+        
         crit_all = df_actual[df_actual['Temp'] >= UMBRAL_CRITICO]
         if not crit_all.empty:
-            st.error(f"⚠️ Se encontraron {len(crit_all)} slots críticos.")
-            st.dataframe(crit_all[['Sitio', 'Slot', 'Temp']].sort_values('Temp', ascending=False), use_container_width=True)
-        else: st.success("✅ Todo OK.")
-
-    with tab_busq:
-        s_busq = st.selectbox("Buscar por Sitio:", sorted(df_actual['Sitio'].unique()))
-        st.dataframe(df_actual[df_actual['Sitio'] == s_busq], use_container_width=True)
-
-else:
-    st.warning(f"⚠️ No hay archivos .txt en la carpeta '{FOLDER_PATH}'.")
+            st.error(f"⚠️ Se encontraron {len(crit_all)} slots críticos con temperatura absoluta (≥ {UMBRAL_CRITICO}°C).")
+            st.dataframe(crit_all[['Sitio', 'Slot', 'Temp', 'ID_Full']].sort_values('Temp', ascending=False), use_container_width=True, hide_index=True)
+        else: 
+            st.success("✅ Ningún slot supera el umbral crítico absoluto.")
+            
+        st.divider()
+        st.subheader("📈 Cambios Bruscos de Tendencia (Saltos Térmicos Coincidentes)")
+        
+        if "df_prev" in st.session_state and not st.session_state["df_prev"].empty:
+            df_anterior = st.session_state["df_prev"]
+            
+            # Cruzamos datos del reporte actual vs anterior usando la llave única ID_Full
+            df_tendencia = pd.merge(
+                df_actual[['ID_Full', 'Sitio', 'Slot', 'Temp']].rename(columns={'Temp': 'Temp_Actual'}),
+                df_anterior[['ID_Full', 'Temp']].rename(columns={'Temp': 'Temp_Anterior'}),
+                on='ID_Full', how='inner'
+            )
+            
+            df_tendencia['Delta_Temp'] = df_tendencia['Temp_Actual'] - df_tendencia['Temp_Anterior']
