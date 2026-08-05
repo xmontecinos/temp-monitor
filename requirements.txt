@@ -1,5 +1,7 @@
-streamlit
+streamlit==1.49.1
 pandas
 plotly
-openpyxl
 pyarrow
+numpy
+xlsxwriter
+streamlit-autorefresh
