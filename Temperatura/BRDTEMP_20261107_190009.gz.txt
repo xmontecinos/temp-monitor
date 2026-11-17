@@ -1,0 +1,50 @@
+=============================================================
+MML Command:
+	DSP BRDTEMP:;
+NE Name:
+	RHPUA0
+MML Command Report:
+	Invalid command,it is inexecutable.
+MML Command Result:
+	
+MML Command Return Code:
+	1
+=============================================================
+MML Command:
+	DSP BRDTEMP:;
+NE Name:
+	MAE_SAE_HUAWEI01
+MML Command Report:
+	NE is not connected.
+MML Command Result:
+	NE is not connected.
+MML Command Return Code:
+	1
+NE Name:
+	53_416
+MML Command Report:
+	+++    53_416        2026-11-07 18:00:11
+O&M    #10049
+%%/*1879107056 MML Session=1794088811*/DSP BRDTEMP:;%%
+RETCODE = 0  Operation succeeded.
+
+Display Board Temperature
+-------------------------
+Cabinet No.  Subrack No.  Slot No.  Board Temperature(degree Celsius)  HPA Temperature(degree Celsius)
+
+0            0            0         60                                 NULL                           
+0            0            2         60                                 NULL                           
+0            0            4         68                                 NULL                           
+0            0            6         49                                 NULL                           
+0            80           0         32                                 33                             
+0            170          0         39                                 34                             
+(Number of results = 6)
+
+
+---    END
+
+
+MML Command Result:
+	Operation succeeded.
+MML Command Return Code:
+	0
